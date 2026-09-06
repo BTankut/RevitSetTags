@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Revit Set Tags</Name>
+    <Text>Revit Set Tags</Text>
+    <Description>Orders selected tags in an evenly spaced column (start position + shift). Reverse-engineered from the "Revit API (C#) - Tags ordering" demo.</Description>
+    <Assembly>RevitSetTags.dll</Assembly>
+    <FullClassName>RevitSetTags.App</FullClassName>
+    <AddInId>4b70ae0d-cd62-4a4d-96cb-eff5105d695a</AddInId>
+    <VendorId>USER</VendorId>
+    <VendorDescription>Local build, reverse-engineered from a ProEngineering demo</VendorDescription>
+  </AddIn>
+</RevitAddIns>
