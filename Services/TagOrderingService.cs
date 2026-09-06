@@ -6,97 +6,42 @@ using Autodesk.Revit.DB;
 namespace RevitSetTags.Services
 {
     /// <summary>
-    /// Session-scoped store for the tags chosen with "Pick elements" and for the
-    /// tag head positions captured before the first "Set tags" run, so "Reset"
-    /// can restore them. Cleared when Revit restarts.
-    /// </summary>
-    public static class TagStore
-    {
-        private static readonly Dictionary<string, ElementId> TagIdsByDocument =
-            new Dictionary<string, ElementId>(StringComparer.Ordinal);
-
-        private static readonly List<ElementId> TagIds = new List<ElementId>();
-
-        private static readonly Dictionary<string, XYZ> OriginalPositions =
-            new Dictionary<string, XYZ>(StringComparer.Ordinal);
-
-        public static void AddTagIds(Document doc, IEnumerable<ElementId> ids)
-        {
-            foreach (ElementId id in ids)
-            {
-                if (!TagIds.Contains(id))
-                {
-                    TagIds.Add(id);
-                }
-            }
-        }
-
-        public static List<IndependentTag> GetTags(Document doc)
-        {
-            return TagIds
-                .Select(id => doc.GetElement(id))
-                .OfType<IndependentTag>()
-                .ToList();
-        }
-
-        public static void RememberOriginalPosition(IndependentTag tag, XYZ position)
-        {
-            if (!OriginalPositions.ContainsKey(tag.UniqueId))
-            {
-                OriginalPositions[tag.UniqueId] = position;
-            }
-        }
-
-        public static bool TryGetOriginalPosition(IndependentTag tag, out XYZ position)
-        {
-            return OriginalPositions.TryGetValue(tag.UniqueId, out position);
-        }
-
-        public static string Describe(Document doc)
-        {
-            int count = GetTags(doc).Count;
-            return $"Tags selected: {count}.";
-        }
-    }
-
-    /// <summary>
-    /// Core behavior reverse-engineered from the "Revit API (C#) - Tags ordering" demo:
-    /// the first tag head is placed at the start position, every following tag is
-    /// placed one shift vector further, so the tags form an evenly spaced column.
-    /// Tags are ordered by projecting their current head position onto the shift
-    /// direction, which reproduces the "chosen tags are transferred and ordered"
-    /// result of the demo.
+    /// Core behavior reverse-engineered (agentic video analysis) from the
+    /// "Revit API (C#) - Tags ordering" demo:
+    ///
+    /// - PlaceColumn: the first tag head lands on the picked origin point and
+    ///   every following tag one Spacing further down the view's up direction,
+    ///   Tag(i) = origin - i * spacing * up. Tags are ordered by the position of
+    ///   their tagged ("host") elements along that same direction so the leader
+    ///   lines do not cross.
+    /// - Nudge: moves the tags currently selected in the view by the Shift
+    ///   amount along the view up direction (post-correction).
     /// </summary>
     public static class TagOrderingService
     {
-        public static string SetTags(Document doc, IList<IndependentTag> tags, XYZ startMeters, XYZ shiftMeters)
+        public static string PlaceColumn(Document doc, IList<IndependentTag> tags, XYZ origin, double spacing, XYZ up)
         {
-            XYZ start = ToInternal(startMeters);
-            XYZ shift = ToInternal(shiftMeters);
-            XYZ direction = shift.GetLength() > 1e-9 ? shift.Normalize() : XYZ.BasisZ;
-
             List<IndependentTag> ordered = tags
-                .Select(tag => new { Tag = tag, Head = TryGetHead(tag) })
-                .Where(item => item.Head != null)
-                .OrderBy(item => item.Head.DotProduct(direction))
+                .Select(tag => new { Tag = tag, Anchor = TryGetAnchor(doc, tag) })
+                .Where(item => item.Anchor != null)
+                .OrderByDescending(item => item.Anchor.DotProduct(up))
                 .ThenBy(item => item.Tag.Id.Value)
                 .Select(item => item.Tag)
                 .ToList();
 
-            int moved = 0;
+            int placed = 0;
             int skipped = 0;
             int leaders = 0;
 
-            foreach (IndependentTag tag in ordered)
+            for (int i = 0; i < ordered.Count; i++)
             {
-                XYZ target = start + shift * moved;
+                XYZ target = origin - up * (spacing * i);
+                IndependentTag tag = ordered[i];
                 try
                 {
-                    if (tag.Location is LocationPoint head)
+                    if (TrySetHeadPosition(tag, target))
                     {
-                        TagStore.RememberOriginalPosition(tag, head.Point);
-                        head.Point = target;
-                        moved++;
+                        placed++;
                         if (EnsureLeader(tag))
                         {
                             leaders++;
@@ -113,39 +58,141 @@ namespace RevitSetTags.Services
                 }
             }
 
-            return $"{moved} tag(s) ordered, {skipped} skipped, {leaders} leader(s) enabled.";
+            return $"{placed} tag(s) placed in column, {skipped} skipped, {leaders} leader(s) enabled.";
         }
 
-        public static string ResetTags(Document doc, IList<IndependentTag> tags)
+        public static string Nudge(Document doc, IList<IndependentTag> tags, XYZ delta)
         {
-            int restored = 0;
-            int missing = 0;
+            int moved = 0;
+            int skipped = 0;
 
             foreach (IndependentTag tag in tags)
             {
-                if (tag.Location is LocationPoint head && TagStore.TryGetOriginalPosition(tag, out XYZ original))
+                try
                 {
-                    head.Point = original;
-                    restored++;
+                    XYZ current = GetHeadPosition(tag);
+                    if (current != null && TrySetHeadPosition(tag, current + delta))
+                    {
+                        moved++;
+                    }
+                    else
+                    {
+                        skipped++;
+                    }
                 }
-                else
+                catch
                 {
-                    missing++;
+                    skipped++;
                 }
             }
 
-            return $"{restored} tag(s) restored, {missing} without a stored position.";
+            return $"{moved} tag(s) shifted, {skipped} skipped.";
         }
 
-        private static XYZ TryGetHead(IndependentTag tag)
+        public static XYZ GetViewUp(View view)
         {
             try
             {
-                return (tag.Location as LocationPoint)?.Point;
+                XYZ up = view.UpDirection;
+                if (up != null && up.GetLength() > 1e-9)
+                {
+                    return up.Normalize();
+                }
             }
             catch
             {
-                return null;
+                // Some view types do not expose UpDirection.
+            }
+
+            return XYZ.BasisZ;
+        }
+
+        private static XYZ TryGetAnchor(Document doc, IndependentTag tag)
+        {
+            try
+            {
+                foreach (Element host in tag.GetTaggedLocalElements())
+                {
+                    XYZ center = GetElementCenter(host);
+                    if (center != null)
+                    {
+                        return center;
+                    }
+                }
+            }
+            catch
+            {
+                // Multi-reference or unpinnable tags fall back to the tag head.
+            }
+
+            return GetHeadPosition(tag);
+        }
+
+        private static XYZ GetElementCenter(Element element)
+        {
+            try
+            {
+                if (element.Location is LocationPoint point)
+                {
+                    return point.Point;
+                }
+
+                BoundingBoxXYZ box = element.get_BoundingBox(null);
+                if (box != null)
+                {
+                    return (box.Min + box.Max) * 0.5;
+                }
+            }
+            catch
+            {
+                // Fall through.
+            }
+
+            return null;
+        }
+
+        private static XYZ GetHeadPosition(IndependentTag tag)
+        {
+            try
+            {
+                return tag.TagHeadPosition;
+            }
+            catch
+            {
+                try
+                {
+                    return (tag.Location as LocationPoint)?.Point;
+                }
+                catch
+                {
+                    return null;
+                }
+            }
+        }
+
+        private static bool TrySetHeadPosition(IndependentTag tag, XYZ position)
+        {
+            try
+            {
+                tag.TagHeadPosition = position;
+                return true;
+            }
+            catch
+            {
+                try
+                {
+                    if (tag.Location is LocationPoint head)
+                    {
+                        head.Point = position;
+                        return true;
+                    }
+                }
+                catch
+                {
+                    // Tag cannot be moved in this view.
+                }
+
+                return false;
             }
         }
 
@@ -165,12 +212,6 @@ namespace RevitSetTags.Services
             }
 
             return false;
-        }
-
-        private static XYZ ToInternal(XYZ meters)
-        {
-            double factor = UnitUtils.ConvertToInternalUnits(1.0, UnitTypeId.Meters);
-            return new XYZ(meters.X * factor, meters.Y * factor, meters.Z * factor);
         }
     }
 }

@@ -27,12 +27,13 @@ namespace RevitSetTags
                 dllPath,
                 "RevitSetTags.Commands.ShowSetTagsCommand")
             {
-                ToolTip = "Pick tags and align them in an ordered column.",
+                ToolTip = "Pick tags, pick a column origin, and stack the tags with equal spacing.",
                 LongDescription =
-                    "Reorders the selected IndependentTag elements: the first tag head is placed at the " +
-                    "start position and every following tag is shifted by the shift vector. " +
-                    "Leaders keep pointing to the tagged elements. Works in 3D, plan and section views. " +
-                    "Values are entered in meters.",
+                    "Recreates the 'Tags ordering' workflow: 'Get tags' picks IndependentTag elements and a " +
+                    "column origin point; the first tag head lands on that point and every following tag one " +
+                    "Spacing further down, ordered by their tagged elements so leaders do not cross. " +
+                    "Shift (m) with Up/Down nudges the tags selected in the view for post-correction. " +
+                    "Works in 3D, plan and section views. Values are entered in meters.",
             };
 
             panel.AddItem(setTagsButton);

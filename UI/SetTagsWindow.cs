@@ -10,21 +10,20 @@ using Form = System.Windows.Forms.Form;
 namespace RevitSetTags.UI
 {
     /// <summary>
-    /// Modeless window shown by the "Set Tags" ribbon button. Mirrors the dialog
-    /// of the demoed plugin: pick elements, enter the start position and the
-    /// shift between tags, then set or reset the tags.
+    /// Modeless window shown by the "Set Tags" ribbon button. Recreates the
+    /// "ProEngineering Bim" palette of the demoed plugin: Get tags, Tags count,
+    /// Spacing (m), and Shift (m) with Up/Down post-correction buttons.
     /// </summary>
     public class SetTagsWindow : Form
     {
         private readonly SetTagsHandler _handler;
         private readonly ExternalEvent _event;
-        private bool _reshowAfterPick;
 
-        private Button _pickButton;
+        private Button _getTagsButton;
         private Label _countLabel;
-        private TextBox _startX, _startY, _startZ;
-        private TextBox _shiftX, _shiftY, _shiftZ;
-        private Button _setButton, _resetButton, _closeButton;
+        private TextBox _spacingBox;
+        private TextBox _shiftBox;
+        private Button _upButton, _downButton;
         private Label _statusLabel;
 
         private static SetTagsWindow _instance;
@@ -48,219 +47,183 @@ namespace RevitSetTags.UI
             _instance.Activate();
         }
 
-        protected override bool ShowWithoutActivation => false;
-
         private void BuildUi()
         {
-            Text = "Set Tags";
+            Text = "ProEngineering Bim";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.CenterScreen;
             TopMost = true;
-            ClientSize = new System.Drawing.Size(360, 300);
+            ClientSize = new System.Drawing.Size(320, 220);
 
             var selectionGroup = new GroupBox
             {
-                Text = "1. Selection",
+                Text = "Tags",
                 Left = 12,
                 Top = 10,
-                Width = 336,
-                Height = 62,
+                Width = 296,
+                Height = 64,
             };
 
-            _pickButton = new Button
+            _getTagsButton = new Button
             {
-                Text = "Pick elements",
+                Text = "Get tags",
                 Left = 12,
-                Top = 24,
-                Width = 120,
+                Top = 26,
+                Width = 110,
                 Height = 28,
             };
-            _pickButton.Click += OnPickClicked;
+            _getTagsButton.Click += OnGetTagsClicked;
 
             _countLabel = new Label
             {
-                Text = "Tags selected: 0",
-                Left = 144,
-                Top = 30,
-                Width = 180,
+                Text = "Tags count: 0",
+                Left = 136,
+                Top = 32,
+                Width = 150,
                 Height = 20,
             };
 
-            selectionGroup.Controls.Add(_pickButton);
+            selectionGroup.Controls.Add(_getTagsButton);
             selectionGroup.Controls.Add(_countLabel);
 
-            var orderingGroup = new GroupBox
+            var columnGroup = new GroupBox
             {
-                Text = "2. Ordering (meters)",
+                Text = "Column",
                 Left = 12,
-                Top = 78,
-                Width = 336,
-                Height = 118,
+                Top = 80,
+                Width = 296,
+                Height = 58,
             };
 
-            _startX = MakeBox("1.0");
-            _startY = MakeBox("1.0");
-            _startZ = MakeBox("0.0");
-            _shiftX = MakeBox("0.0");
-            _shiftY = MakeBox("0.0");
-            _shiftZ = MakeBox("0.1");
-
-            AddRow(orderingGroup, "Start", _startX, _startY, _startZ, 26);
-            AddRow(orderingGroup, "Shift", _shiftX, _shiftY, _shiftZ, 60);
-
-            orderingGroup.Controls.Add(new Label
+            columnGroup.Controls.Add(new Label
             {
-                Text = "First tag head at Start; every next tag one Shift further.",
-                Left = 14,
-                Top = 92,
-                Width = 310,
-                Height = 18,
+                Text = "Spacing (m):",
+                Left = 12,
+                Top = 27,
+                Width = 82,
             });
 
-            _setButton = new Button
+            _spacingBox = new TextBox
             {
-                Text = "Set tags",
+                Text = "1",
+                Left = 100,
+                Top = 24,
+                Width = 70,
+            };
+            columnGroup.Controls.Add(_spacingBox);
+
+            var correctionGroup = new GroupBox
+            {
+                Text = "Post-correction",
                 Left = 12,
-                Top = 206,
-                Width = 104,
-                Height = 30,
+                Top = 144,
+                Width = 296,
+                Height = 58,
             };
-            _setButton.Click += OnSetClicked;
 
-            _resetButton = new Button
+            correctionGroup.Controls.Add(new Label
             {
-                Text = "Reset",
-                Left = 128,
-                Top = 206,
-                Width = 104,
-                Height = 30,
-            };
-            _resetButton.Click += OnResetClicked;
+                Text = "Shift (m):",
+                Left = 12,
+                Top = 27,
+                Width = 70,
+            });
 
-            _closeButton = new Button
+            _shiftBox = new TextBox
             {
-                Text = "Close",
-                Left = 244,
-                Top = 206,
-                Width = 104,
-                Height = 30,
+                Text = "1.00",
+                Left = 88,
+                Top = 24,
+                Width = 70,
             };
-            _closeButton.Click += (s, e) => Hide();
+            correctionGroup.Controls.Add(_shiftBox);
+
+            _upButton = new Button
+            {
+                Text = "▲",
+                Left = 170,
+                Top = 22,
+                Width = 52,
+                Height = 28,
+            };
+            _upButton.Click += (s, e) => OnNudgeClicked(HandlerMode.NudgeUp);
+
+            _downButton = new Button
+            {
+                Text = "▼",
+                Left = 228,
+                Top = 22,
+                Width = 52,
+                Height = 28,
+            };
+            _downButton.Click += (s, e) => OnNudgeClicked(HandlerMode.NudgeDown);
+
+            correctionGroup.Controls.Add(_upButton);
+            correctionGroup.Controls.Add(_downButton);
 
             _statusLabel = new Label
             {
                 Text = "Ready.",
                 Left = 12,
-                Top = 246,
-                Width = 336,
-                Height = 42,
+                Top = 176,
+                Width = 296,
+                Height = 38,
             };
 
             Controls.Add(selectionGroup);
-            Controls.Add(orderingGroup);
-            Controls.Add(_setButton);
-            Controls.Add(_resetButton);
-            Controls.Add(_closeButton);
+            Controls.Add(columnGroup);
+            Controls.Add(correctionGroup);
             Controls.Add(_statusLabel);
-
-            AcceptButton = _setButton;
         }
 
-        private static TextBox MakeBox(string defaultValue)
+        private bool TryReadPositiveMeters(TextBox box, out double meters)
         {
-            return new TextBox
-            {
-                Text = defaultValue,
-                Width = 78,
-            };
+            bool ok = double.TryParse((box.Text ?? "").Trim().Replace(',', '.'), NumberStyles.Float,
+                CultureInfo.InvariantCulture, out meters);
+            return ok && meters > 0;
         }
 
-        private static void AddRow(GroupBox group, string title, TextBox x, TextBox y, TextBox z, int top)
+        private void OnGetTagsClicked(object sender, EventArgs e)
         {
-            group.Controls.Add(new Label
+            if (!TryReadPositiveMeters(_spacingBox, out double spacing))
             {
-                Text = title,
-                Left = 14,
-                Top = top + 3,
-                Width = 40,
-            });
-
-            int[] lefts = { 60, 154, 248 };
-            TextBox[] boxes = { x, y, z };
-            string[] axes = { "X", "Y", "Z" };
-
-            for (int i = 0; i < 3; i++)
-            {
-                group.Controls.Add(new Label
-                {
-                    Text = axes[i],
-                    Left = lefts[i],
-                    Top = top + 3,
-                    Width = 16,
-                });
-                boxes[i].Left = lefts[i] + 18;
-                boxes[i].Top = top;
-                group.Controls.Add(boxes[i]);
-            }
-        }
-
-        private void OnPickClicked(object sender, EventArgs e)
-        {
-            _reshowAfterPick = true;
-            _countLabel.Text = "Picking...";
-            Hide();
-            _handler.Mode = HandlerMode.PickElements;
-            _event.Raise();
-        }
-
-        private void OnSetClicked(object sender, EventArgs e)
-        {
-            if (!TryParseVector(_startX, _startY, _startZ, out double sx, out double sy, out double sz) ||
-                !TryParseVector(_shiftX, _shiftY, _shiftZ, out double dx, out double dy, out double dz))
-            {
-                _statusLabel.Text = "Invalid numbers. Use invariant decimals, e.g. 0.1";
+                _statusLabel.Text = "Invalid spacing. Use a positive number, e.g. 1";
                 return;
             }
 
-            _handler.Start = new XYZ(sx, sy, sz);
-            _handler.Shift = new XYZ(dx, dy, dz);
-            _handler.Mode = HandlerMode.SetTags;
+            _handler.SpacingMeters = spacing;
+            _countLabel.Text = "Picking...";
+            _handler.Mode = HandlerMode.GetTags;
             _event.Raise();
         }
 
-        private void OnResetClicked(object sender, EventArgs e)
+        private void OnNudgeClicked(HandlerMode mode)
         {
-            _handler.Mode = HandlerMode.ResetTags;
-            _event.Raise();
-        }
+            if (!TryReadPositiveMeters(_shiftBox, out double shift))
+            {
+                _statusLabel.Text = "Invalid shift. Use a positive number, e.g. 0.5";
+                return;
+            }
 
-        private static bool TryParseVector(TextBox x, TextBox y, TextBox z, out double vx, out double vy, out double vz)
-        {
-            bool okX = double.TryParse((x.Text ?? "").Trim().Replace(',', '.'), NumberStyles.Float,
-                CultureInfo.InvariantCulture, out vx);
-            bool okY = double.TryParse((y.Text ?? "").Trim().Replace(',', '.'), NumberStyles.Float,
-                CultureInfo.InvariantCulture, out vy);
-            bool okZ = double.TryParse((z.Text ?? "").Trim().Replace(',', '.'), NumberStyles.Float,
-                CultureInfo.InvariantCulture, out vz);
-            return okX && okY && okZ;
+            _handler.ShiftMeters = shift;
+            _handler.Mode = mode;
+            _event.Raise();
         }
 
         internal void OnApiStatus(string status)
         {
-            if (_reshowAfterPick)
-            {
-                _reshowAfterPick = false;
-                Show();
-                Activate();
-            }
-
             _statusLabel.Text = status;
-            if (status != null && status.StartsWith("Tags selected:"))
+            if (status != null && status.StartsWith("Tags count:"))
             {
-                _countLabel.Text = status;
+                int dot = status.IndexOf('.');
+                _countLabel.Text = dot > 0 ? status.Substring(0, dot) : status;
+            }
+            else if (status == "Selection cancelled.")
+            {
+                _countLabel.Text = "Tags count: 0";
             }
         }
 
