@@ -14,22 +14,92 @@ namespace RevitSetTags.Handlers
     {
         None,
         GetTags,
-        NudgeUp,
-        NudgeDown
+        PlaceColumn,
+        Relayout
     }
 
     /// <summary>
-    /// Runs the window's actions on the Revit API context. The modeless window
+    /// One entry of the palette's filter: a tag category, optionally narrowed to
+    /// one tag family, with the number of matching tags in the current selection.
+    /// Null filter = every selected tag.
+    /// </summary>
+    public sealed class TagTypeFilter
+    {
+        public string Display;
+        public ElementId CategoryId;
+        public ElementId FamilyId;
+        public int Count;
+
+        public override string ToString()
+        {
+            return Display;
+        }
+
+        public bool Matches(IndependentTag tag)
+        {
+            try
+            {
+                if (tag.Category == null || tag.Category.Id != CategoryId)
+                {
+                    return false;
+                }
+
+                if (FamilyId == null)
+                {
+                    return true;
+                }
+
+                FamilySymbol symbol = tag.Document.GetElement(tag.GetTypeId()) as FamilySymbol;
+                return symbol?.Family != null && symbol.Family.Id == FamilyId;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Runs the palette's actions on the Revit API context. The modeless window
     /// raises the external event; Revit calls Execute when the API is idle.
-    /// Mirrors the demoed "ProEngineering Bim" palette: Get tags, Spacing (m),
-    /// Shift (m) with Up/Down post-correction buttons.
+    ///
+    /// Workflow: GetTags selects tags (nothing else); the palette then offers a
+    /// filter built from that selection; PlaceColumn picks the column origin and
+    /// an optional direction point, lays the (filtered) tags out and ends the
+    /// command. Relayout applies new "Spacing x" / "Shift x" values to the tags
+    /// selected in the view, or to the last placed group when nothing is selected.
     /// </summary>
     public class SetTagsHandler : IExternalEventHandler
     {
+        private const string TransactionName = "Order Tags";
+        private const int MaxSessions = 50;
+
         public HandlerMode Mode { get; set; } = HandlerMode.None;
-        public double SpacingMeters { get; set; } = 1.0;
-        public double ShiftMeters { get; set; } = 1.0;
+        public double SpacingMeters { get; set; } = 0.6;
+        public double ShiftMeters { get; set; } = 0.3;
+        public TagTypeFilter Filter { get; set; }
+        /// <summary>When true, Pick direction asks for a second (direction) point; otherwise the column goes straight down.</summary>
+        public bool PickDirectionPoint { get; set; }
         public SetTagsWindow.WindowBridge Bridge { get; set; }
+
+        private PendingSelection _pending;
+        private readonly List<ColumnSession> _sessions = new List<ColumnSession>();
+
+        private sealed class PendingSelection
+        {
+            public string DocumentKey;
+            public ElementId ViewId;
+            public List<ElementId> TagIds;
+        }
+
+        private sealed class ColumnSession
+        {
+            public string DocumentKey;
+            public ElementId ViewId;
+            public HashSet<long> TagIds;
+            public XYZ Origin;
+            public XYZ ColumnDir;
+        }
 
         public string GetName()
         {
@@ -56,11 +126,11 @@ namespace RevitSetTags.Handlers
                         case HandlerMode.GetTags:
                             status = RunGetTags(uidoc);
                             break;
-                        case HandlerMode.NudgeUp:
-                            status = RunNudge(uidoc, +1);
+                        case HandlerMode.PlaceColumn:
+                            status = RunPlaceColumn(uidoc);
                             break;
-                        case HandlerMode.NudgeDown:
-                            status = RunNudge(uidoc, -1);
+                        case HandlerMode.Relayout:
+                            status = RunRelayout(uidoc);
                             break;
                         default:
                             status = null;
@@ -83,64 +153,426 @@ namespace RevitSetTags.Handlers
             }
         }
 
+        /// <summary>Step 1: select tags. The palette gets the filter entries of that selection.</summary>
         private string RunGetTags(UIDocument uidoc)
         {
-            IList<Reference> refs = uidoc.Selection.PickObjects(
-                ObjectType.Element,
-                new TagSelectionFilter(),
-                "Select the tags to order, then click Finish (or press Esc to cancel).");
+            Document doc = uidoc.Document;
+            View view = uidoc.ActiveView;
 
-            List<IndependentTag> tags = refs
-                .Select(r => uidoc.Document.GetElement(r.ElementId))
-                .OfType<IndependentTag>()
-                .ToList();
+            // Tags already selected with Revit's own selection tool need no Finish click.
+            List<IndependentTag> tags = SelectedTags(uidoc, view);
+            if (tags.Count == 0)
+            {
+                IList<Reference> refs = uidoc.Selection.PickObjects(
+                    ObjectType.Element,
+                    new TagSelectionFilter(),
+                    "Select the tags to order (window selection is fine), then click Finish.");
+
+                tags = refs
+                    .Select(r => doc.GetElement(r.ElementId))
+                    .OfType<IndependentTag>()
+                    .ToList();
+            }
 
             if (tags.Count == 0)
             {
+                _pending = null;
+                Bridge?.ReportSelection(new List<TagTypeFilter>(), 0);
                 return "No tags in selection.";
             }
 
-            XYZ origin = uidoc.Selection.PickPoint(
-                "Click the origin point of the tag column (top of the stack).");
-
-            View view = uidoc.ActiveView;
-            XYZ up = TagOrderingService.GetViewUp(view);
-            double spacing = UnitUtils.ConvertToInternalUnits(SpacingMeters, UnitTypeId.Meters);
-
-            using (Transaction t = new Transaction(uidoc.Document, "Order Tags"))
+            _pending = new PendingSelection
             {
-                t.Start();
-                string result = TagOrderingService.PlaceColumn(uidoc.Document, tags, origin, spacing, up);
-                t.Commit();
+                DocumentKey = DocumentKey(doc),
+                ViewId = view.Id,
+                TagIds = tags.Select(t => t.Id).ToList(),
+            };
 
-                return $"Tags count: {tags.Count}. {result}";
-            }
+            Bridge?.ReportSelection(CollectTagTypes(tags), tags.Count);
+            return $"{tags.Count} tag(s) selected. Filter if needed, then Pick direction.";
         }
 
-        private string RunNudge(UIDocument uidoc, int sign)
+        /// <summary>
+        /// Step 2: pick the column origin and an optional direction point, lay out
+        /// the pending (filtered) tags, or the tags selected in the view, or move
+        /// the last group when nothing is pending or selected.
+        /// </summary>
+        private string RunPlaceColumn(UIDocument uidoc)
         {
-            List<IndependentTag> tags = uidoc.Selection.GetElementIds()
-                .Select(id => uidoc.Document.GetElement(id))
-                .OfType<IndependentTag>()
-                .ToList();
+            Document doc = uidoc.Document;
+            View view = uidoc.ActiveView;
+            TagTypeFilter filter = Filter;
+
+            List<IndependentTag> tags = PendingTags(doc, view);
+            string source = "selection";
+            if (tags.Count == 0)
+            {
+                tags = SelectedTags(uidoc, view);
+            }
 
             if (tags.Count == 0)
             {
-                return "Select one or more tags in the view, then use Up/Down.";
+                ColumnSession last = LastSession(doc, view);
+                if (last == null)
+                {
+                    return "Nothing to place. Use Get tags first.";
+                }
+
+                tags = SessionTags(doc, last);
+                source = "last group";
             }
 
-            View view = uidoc.ActiveView;
-            XYZ up = TagOrderingService.GetViewUp(view);
-            double shift = UnitUtils.ConvertToInternalUnits(ShiftMeters, UnitTypeId.Meters);
-            XYZ delta = up * (shift * sign);
+            if (filter != null)
+            {
+                tags = tags.Where(filter.Matches).ToList();
+                if (tags.Count == 0)
+                {
+                    return "No selected tag matches the filter " + filter.Display + ".";
+                }
+            }
 
-            using (Transaction t = new Transaction(uidoc.Document, "Shift Tags"))
+            XYZ origin = PickPointInTagPlane(uidoc, view, tags,
+                "Click the column origin (the first tag lands there).");
+
+            XYZ columnDir = null;
+            if (PickDirectionPoint)
+            {
+                try
+                {
+                    XYZ second = PickPointInTagPlane(uidoc, view, tags,
+                        "Click a point for the column direction, or press Esc for straight down.");
+                    XYZ dir = second - origin;
+                    if (dir.GetLength() > 1e-6)
+                    {
+                        columnDir = dir.Normalize();
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    columnDir = null;
+                }
+            }
+
+            ColumnResult result = Layout(doc, view, tags, origin, columnDir);
+            RememberSession(doc, view, tags, origin, columnDir);
+
+            _pending = null;
+            Filter = null;
+            Bridge?.ReportPlaced();
+            return $"Tags count: {tags.Count}. {result} ({source})";
+        }
+
+        /// <summary>Live "Spacing x" / "Shift x": selected tags first, else the last placed group.</summary>
+        private string RunRelayout(UIDocument uidoc)
+        {
+            Document doc = uidoc.Document;
+            View view = uidoc.ActiveView;
+
+            List<IndependentTag> selected = SelectedTags(uidoc, view);
+            if (selected.Count > 0)
+            {
+                ColumnSession session = FindSession(doc, view, selected);
+                XYZ columnDir = session?.ColumnDir;
+                XYZ origin = session?.Origin ?? FirstHead(view, selected, columnDir);
+                if (origin == null)
+                {
+                    return "Selected tags have no position to start from.";
+                }
+
+                ColumnResult result = Layout(doc, view, selected, origin, columnDir);
+                RememberSession(doc, view, selected, origin, columnDir);
+                return $"Tags count: {selected.Count}. Adjusted selection: {result}";
+            }
+
+            ColumnSession last = LastSession(doc, view);
+            if (last == null)
+            {
+                return "Nothing to adjust yet: select tags in the view or place a column first.";
+            }
+
+            List<IndependentTag> tags = SessionTags(doc, last);
+            if (tags.Count == 0)
+            {
+                _sessions.Remove(last);
+                return "The tags of the last group were deleted.";
+            }
+
+            ColumnResult adjusted = Layout(doc, view, tags, last.Origin, last.ColumnDir);
+            return $"Tags count: {tags.Count}. Adjusted last group: {adjusted}";
+        }
+
+        private ColumnResult Layout(Document doc, View view, IList<IndependentTag> tags, XYZ origin, XYZ columnDir)
+        {
+            // Family label geometry (EditFamily) must be read outside the transaction.
+            TagOrderingService.PrepareTextMetrics(doc, tags);
+
+            using (Transaction t = new Transaction(doc, TransactionName))
             {
                 t.Start();
-                string result = TagOrderingService.Nudge(uidoc.Document, tags, delta);
+                ColumnResult result = TagOrderingService.PlaceColumn(doc, view, tags, origin, columnDir, SpacingInternal(), ShiftInternal());
                 t.Commit();
                 return result;
             }
+        }
+
+        // ----- selections and sessions -------------------------------------------------
+
+        private List<IndependentTag> PendingTags(Document doc, View view)
+        {
+            if (_pending == null || _pending.DocumentKey != DocumentKey(doc) || _pending.ViewId != view.Id)
+            {
+                return new List<IndependentTag>();
+            }
+
+            return _pending.TagIds
+                .Select(id => doc.GetElement(id))
+                .OfType<IndependentTag>()
+                .Where(tag => tag.IsValidObject)
+                .ToList();
+        }
+
+        private static List<IndependentTag> SelectedTags(UIDocument uidoc, View view)
+        {
+            Document doc = uidoc.Document;
+            return uidoc.Selection.GetElementIds()
+                .Select(id => doc.GetElement(id))
+                .OfType<IndependentTag>()
+                .Where(tag => tag.IsValidObject && tag.OwnerViewId == view.Id)
+                .ToList();
+        }
+
+        private List<IndependentTag> SessionTags(Document doc, ColumnSession session)
+        {
+            return session.TagIds
+                .Select(id => doc.GetElement(new ElementId(id)))
+                .OfType<IndependentTag>()
+                .Where(tag => tag.IsValidObject)
+                .ToList();
+        }
+
+        private ColumnSession LastSession(Document doc, View view)
+        {
+            string key = DocumentKey(doc);
+            for (int i = _sessions.Count - 1; i >= 0; i--)
+            {
+                if (_sessions[i].DocumentKey == key && _sessions[i].ViewId == view.Id)
+                {
+                    return _sessions[i];
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>The most recent group that contains any of the given tags.</summary>
+        private ColumnSession FindSession(Document doc, View view, IList<IndependentTag> tags)
+        {
+            string key = DocumentKey(doc);
+            for (int i = _sessions.Count - 1; i >= 0; i--)
+            {
+                ColumnSession s = _sessions[i];
+                if (s.DocumentKey == key && s.ViewId == view.Id && tags.Any(t => s.TagIds.Contains(t.Id.Value)))
+                {
+                    return s;
+                }
+            }
+
+            return null;
+        }
+
+        private void RememberSession(Document doc, View view, IList<IndependentTag> tags, XYZ origin, XYZ columnDir)
+        {
+            var ids = new HashSet<long>(tags.Select(t => t.Id.Value));
+            _sessions.RemoveAll(s => s.DocumentKey == DocumentKey(doc) && s.ViewId == view.Id && s.TagIds.SetEquals(ids));
+            _sessions.Add(new ColumnSession
+            {
+                DocumentKey = DocumentKey(doc),
+                ViewId = view.Id,
+                TagIds = ids,
+                Origin = origin,
+                ColumnDir = columnDir,
+            });
+
+            while (_sessions.Count > MaxSessions)
+            {
+                _sessions.RemoveAt(0);
+            }
+        }
+
+        /// <summary>Head of the tag nearest the start of the column axis; used as origin for never-placed selections.</summary>
+        private static XYZ FirstHead(View view, IList<IndependentTag> tags, XYZ columnDir)
+        {
+            XYZ up = TagOrderingService.GetViewUp(view);
+            XYZ right = TagOrderingService.GetViewRight(view, up);
+            XYZ viewDir = TagOrderingService.GetViewDirection(view, up, right);
+            XYZ axis = TagOrderingService.ProjectToViewPlane(columnDir, viewDir);
+            if (axis == null || axis.GetLength() < 1e-9)
+            {
+                axis = up.Negate();
+            }
+
+            XYZ best = null;
+            double bestA = double.MaxValue;
+            foreach (IndependentTag tag in tags)
+            {
+                XYZ head;
+                try
+                {
+                    head = tag.TagHeadPosition;
+                }
+                catch
+                {
+                    continue;
+                }
+
+                double a = head.DotProduct(axis);
+                if (a < bestA)
+                {
+                    bestA = a;
+                    best = head;
+                }
+            }
+
+            return best;
+        }
+
+        /// <summary>Filter entries (category, and family when a category has several) for a set of tags.</summary>
+        public static List<TagTypeFilter> CollectTagTypes(IList<IndependentTag> tags)
+        {
+            var result = new List<TagTypeFilter>();
+            var byCategory = new Dictionary<long, TagTypeFilter>();
+            var byFamily = new Dictionary<string, TagTypeFilter>();
+
+            foreach (IndependentTag tag in tags)
+            {
+                Category category = tag.Category;
+                if (category == null)
+                {
+                    continue;
+                }
+
+                if (!byCategory.TryGetValue(category.Id.Value, out TagTypeFilter cat))
+                {
+                    cat = new TagTypeFilter { Display = category.Name, CategoryId = category.Id };
+                    byCategory[category.Id.Value] = cat;
+                }
+
+                cat.Count++;
+
+                FamilySymbol symbol = tag.Document.GetElement(tag.GetTypeId()) as FamilySymbol;
+                Family family = symbol?.Family;
+                if (family == null)
+                {
+                    continue;
+                }
+
+                string key = category.Id.Value + "/" + family.Id.Value;
+                if (!byFamily.TryGetValue(key, out TagTypeFilter fam))
+                {
+                    fam = new TagTypeFilter { Display = category.Name + " › " + family.Name, CategoryId = category.Id, FamilyId = family.Id };
+                    byFamily[key] = fam;
+                }
+
+                fam.Count++;
+            }
+
+            foreach (TagTypeFilter cat in byCategory.Values.OrderBy(c => c.Display))
+            {
+                List<TagTypeFilter> families = byFamily.Values.Where(f => f.CategoryId == cat.CategoryId).OrderBy(f => f.Display).ToList();
+                cat.Display = cat.Display + " (" + cat.Count + ")";
+                result.Add(cat);
+                if (families.Count > 1)
+                {
+                    foreach (TagTypeFilter fam in families)
+                    {
+                        fam.Display = fam.Display + " (" + fam.Count + ")";
+                        result.Add(fam);
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Picks a point in the tags' annotation plane. Plan and section views
+        /// already have a work plane; a 3D view gets a temporary work plane
+        /// through the tags, parallel to the screen, for the duration of the pick.
+        /// </summary>
+        private static XYZ PickPointInTagPlane(UIDocument uidoc, View view, IList<IndependentTag> tags, string prompt)
+        {
+            Document doc = uidoc.Document;
+
+            if (view.ViewType != ViewType.ThreeD)
+            {
+                return uidoc.Selection.PickPoint(prompt);
+            }
+
+            XYZ planeOrigin = TagOrderingService.GetMeanHead(tags) ?? XYZ.Zero;
+            XYZ up = TagOrderingService.GetViewUp(view);
+            XYZ normal = TagOrderingService.GetViewDirection(view, up, TagOrderingService.GetViewRight(view, up));
+
+            SketchPlane previous = null;
+            try
+            {
+                previous = view.SketchPlane;
+            }
+            catch
+            {
+                // No work plane set.
+            }
+
+            ElementId tempPlaneId;
+            using (Transaction t = new Transaction(doc, "Temporary work plane"))
+            {
+                t.Start();
+                SketchPlane temp = SketchPlane.Create(doc, Plane.CreateByNormalAndOrigin(normal, planeOrigin));
+                view.SketchPlane = temp;
+                tempPlaneId = temp.Id;
+                t.Commit();
+            }
+
+            try
+            {
+                return uidoc.Selection.PickPoint(prompt);
+            }
+            finally
+            {
+                using (Transaction t = new Transaction(doc, "Remove temporary work plane"))
+                {
+                    t.Start();
+                    try
+                    {
+                        if (previous != null && previous.IsValidObject)
+                        {
+                            view.SketchPlane = previous;
+                        }
+
+                        doc.Delete(tempPlaneId);
+                    }
+                    catch
+                    {
+                        // Leaving the plane behind is harmless.
+                    }
+
+                    t.Commit();
+                }
+            }
+        }
+
+        private double SpacingInternal()
+        {
+            return UnitUtils.ConvertToInternalUnits(SpacingMeters, UnitTypeId.Meters);
+        }
+
+        private double ShiftInternal()
+        {
+            return UnitUtils.ConvertToInternalUnits(ShiftMeters, UnitTypeId.Meters);
+        }
+
+        private static string DocumentKey(Document doc)
+        {
+            return (doc.PathName ?? "") + "|" + (doc.Title ?? "");
         }
     }
 

@@ -31,9 +31,10 @@ namespace RevitSetTags
                 LongDescription =
                     "Recreates the 'Tags ordering' workflow: 'Get tags' picks IndependentTag elements and a " +
                     "column origin point; the first tag head lands on that point and every following tag one " +
-                    "Spacing further down, ordered by their tagged elements so leaders do not cross. " +
-                    "Shift (m) with Up/Down nudges the tags selected in the view for post-correction. " +
-                    "Works in 3D, plan and section views. Values are entered in meters.",
+                    "'Spacing x' further down the view (or along a direction picked with 'Pick direction'), ordered by their tagged " +
+                    "elements so leaders do not cross. Every leader gets a shoulder of length 'Shift x' pointing " +
+                    "towards the elements. Typing or stepping (-/+) either value re-lays out the last group live. " +
+                    "Works in locked 3D, plan and section views. Values are entered in meters.",
             };
 
             panel.AddItem(setTagsButton);
