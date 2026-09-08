@@ -81,10 +81,13 @@ namespace RevitSetTags.Handlers
         public TagTypeFilter Filter { get; set; }
         /// <summary>When true, Pick direction asks for a second (direction) point; otherwise the column goes straight down.</summary>
         public bool PickDirectionPoint { get; set; }
+        /// <summary>Auto lanes: one side (with rings) per tag family instead of sides by bearing.</summary>
+        public bool LanePerFamily { get; set; }
         public SetTagsWindow.WindowBridge Bridge { get; set; }
 
         private PendingSelection _pending;
         private readonly List<ColumnSession> _sessions = new List<ColumnSession>();
+        private readonly List<ColumnSession> _lastOperation = new List<ColumnSession>();
 
         private sealed class PendingSelection
         {
@@ -104,7 +107,7 @@ namespace RevitSetTags.Handlers
 
         public string GetName()
         {
-            return "Set Tags Handler";
+            return "revAgent tag tool handler";
         }
 
         public void Execute(UIApplication app)
@@ -258,7 +261,8 @@ namespace RevitSetTags.Handlers
             }
 
             ColumnResult result = Layout(doc, view, tags, origin, columnDir);
-            RememberSession(doc, view, tags, origin, columnDir);
+            _lastOperation.Clear();
+            _lastOperation.Add(RememberSession(doc, view, tags, origin, columnDir));
 
             _pending = null;
             Filter = null;
@@ -307,13 +311,14 @@ namespace RevitSetTags.Handlers
             using (Transaction t = new Transaction(doc, "Auto lanes"))
             {
                 t.Start();
-                lanes = LaneLayoutService.AutoLanes(doc, view, tags, SpacingInternal(), ShiftInternal());
+                lanes = LaneLayoutService.AutoLanes(doc, view, tags, SpacingInternal(), ShiftInternal(), LanePerFamily);
                 t.Commit();
             }
 
+            _lastOperation.Clear();
             foreach (LaneResult lane in lanes)
             {
-                RememberSession(doc, view, lane.Tags, lane.Origin, lane.Direction);
+                _lastOperation.Add(RememberSession(doc, view, lane.Tags, lane.Origin, lane.Direction));
             }
 
             _pending = null;
@@ -322,46 +327,102 @@ namespace RevitSetTags.Handlers
             int placed = lanes.Sum(l => l.Result.Placed);
             int skipped = lanes.Sum(l => l.Result.Skipped);
             string detail = string.Join(", ", lanes.Select(l => l.Name + " " + l.Tags.Count));
+            if (LanePerFamily)
+            {
+                detail = string.Join(", ", lanes.Select(l => (l.Family ?? "?") + " -> " + l.Name.Replace(" [" + (l.Family ?? "?") + "]", "") + " (" + l.Tags.Count + ")"));
+            }
             return $"Tags count: {tags.Count}. Auto lanes ({source}): {lanes.Count} lanes, {placed} placed, {skipped} skipped. {detail}";
         }
 
-        /// <summary>Live "Spacing x" / "Shift x": selected tags first, else the last placed group.</summary>
+        /// <summary>
+        /// Live "Spacing x" / "Shift x". With tags selected in the view: every group that
+        /// contains a selected tag is re-laid out in full; selected tags that belong to no
+        /// group form a new group starting at their first tag. With nothing selected: every
+        /// group of the last operation (one column, or all Auto lanes).
+        /// </summary>
         private string RunRelayout(UIDocument uidoc)
         {
             Document doc = uidoc.Document;
             View view = uidoc.ActiveView;
+            string key = DocumentKey(doc);
 
             List<IndependentTag> selected = SelectedTags(uidoc, view);
+            var groups = new List<ColumnSession>();
+            List<IndependentTag> loose = new List<IndependentTag>();
             if (selected.Count > 0)
             {
-                ColumnSession session = FindSession(doc, view, selected);
-                XYZ columnDir = session?.ColumnDir;
-                XYZ origin = session?.Origin ?? FirstHead(view, selected, columnDir);
-                if (origin == null)
+                foreach (IndependentTag tag in selected)
                 {
-                    return "Selected tags have no position to start from.";
-                }
+                    ColumnSession session = null;
+                    for (int i = _sessions.Count - 1; i >= 0; i--)
+                    {
+                        ColumnSession s = _sessions[i];
+                        if (s.DocumentKey == key && s.ViewId == view.Id && s.TagIds.Contains(tag.Id.Value))
+                        {
+                            session = s;
+                            break;
+                        }
+                    }
 
-                ColumnResult result = Layout(doc, view, selected, origin, columnDir);
-                RememberSession(doc, view, selected, origin, columnDir);
-                return $"Tags count: {selected.Count}. Adjusted selection: {result}";
+                    if (session == null)
+                    {
+                        loose.Add(tag);
+                    }
+                    else if (!groups.Contains(session))
+                    {
+                        groups.Add(session);
+                    }
+                }
+            }
+            else
+            {
+                groups.AddRange(_lastOperation.Where(s => s.DocumentKey == key && s.ViewId == view.Id));
+                if (groups.Count == 0)
+                {
+                    ColumnSession last = LastSession(doc, view);
+                    if (last != null)
+                    {
+                        groups.Add(last);
+                    }
+                }
             }
 
-            ColumnSession last = LastSession(doc, view);
-            if (last == null)
+            if (groups.Count == 0 && loose.Count == 0)
             {
                 return "Nothing to adjust yet: select tags in the view or place a column first.";
             }
 
-            List<IndependentTag> tags = SessionTags(doc, last);
-            if (tags.Count == 0)
+            int placed = 0, skipped = 0, count = 0;
+            foreach (ColumnSession session in groups)
             {
-                _sessions.Remove(last);
-                return "The tags of the last group were deleted.";
+                List<IndependentTag> tags = SessionTags(doc, session);
+                if (tags.Count == 0)
+                {
+                    _sessions.Remove(session);
+                    continue;
+                }
+
+                ColumnResult result = Layout(doc, view, tags, session.Origin, session.ColumnDir);
+                placed += result.Placed;
+                skipped += result.Skipped;
+                count += tags.Count;
             }
 
-            ColumnResult adjusted = Layout(doc, view, tags, last.Origin, last.ColumnDir);
-            return $"Tags count: {tags.Count}. Adjusted last group: {adjusted}";
+            if (loose.Count > 0)
+            {
+                XYZ origin = FirstHead(view, loose, null);
+                if (origin != null)
+                {
+                    ColumnResult result = Layout(doc, view, loose, origin, null);
+                    _lastOperation.Clear();
+                    _lastOperation.Add(RememberSession(doc, view, loose, origin, null));
+                    placed += result.Placed;
+                    skipped += result.Skipped;
+                    count += loose.Count;
+                }
+            }
+
+            return $"Tags count: {count}. Adjusted {groups.Count + (loose.Count > 0 ? 1 : 0)} group(s): {placed} placed, {skipped} skipped.";
         }
 
         private ColumnResult Layout(Document doc, View view, IList<IndependentTag> tags, XYZ origin, XYZ columnDir)
@@ -443,23 +504,26 @@ namespace RevitSetTags.Handlers
             return null;
         }
 
-        private void RememberSession(Document doc, View view, IList<IndependentTag> tags, XYZ origin, XYZ columnDir)
+        private ColumnSession RememberSession(Document doc, View view, IList<IndependentTag> tags, XYZ origin, XYZ columnDir)
         {
             var ids = new HashSet<long>(tags.Select(t => t.Id.Value));
             _sessions.RemoveAll(s => s.DocumentKey == DocumentKey(doc) && s.ViewId == view.Id && s.TagIds.SetEquals(ids));
-            _sessions.Add(new ColumnSession
+            var session = new ColumnSession
             {
                 DocumentKey = DocumentKey(doc),
                 ViewId = view.Id,
                 TagIds = ids,
                 Origin = origin,
                 ColumnDir = columnDir,
-            });
+            };
+            _sessions.Add(session);
 
             while (_sessions.Count > MaxSessions)
             {
                 _sessions.RemoveAt(0);
             }
+
+            return session;
         }
 
         /// <summary>Head of the tag nearest the start of the column axis; used as origin for never-placed selections.</summary>

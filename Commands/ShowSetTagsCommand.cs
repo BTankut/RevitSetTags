@@ -5,7 +5,7 @@ using Autodesk.Revit.UI;
 namespace RevitSetTags.Commands
 {
     /// <summary>
-    /// Shows (or activates) the modeless "Set Tags" window.
+    /// Shows (or activates) the modeless "revAgent tag tool" palette.
     /// </summary>
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]

@@ -1,119 +1,104 @@
-# Revit Set Tags (Revit 2027)
+# revAgent tag tool (Revit 2027)
 
-Videodan tersine mühendislikle yazılmış eklenti: seçilen tag'leri, tıkladığınız bir başlangıç
-noktasından itibaren eşit aralıklı, düzenli bir kolon halinde dizer ve her leader'a elemanlara
-doğru uzanan eşit uzunlukta bir omuz (dirsek) verir. Kaynak: *"Revit API (C#) - Tags ordering"*
-(ProEngineering, https://www.youtube.com/watch?v=81f3BDShvtI) ve orijinal paletin ekran görüntüsü.
-Video analizi Gemini 3.7 Flash **agentic video understanding** ile iki ayrı sorguda yapıldı
-(native `processing_call` / `processing_result` kayıtlarıyla doğrulandı); ses parçası konuyla
-ilgisizdir, davranış yalnızca görüntüden çıkarılmıştır. Palet düzeni ve etiket metinleri
-orijinal paletin ekran görüntüsünden alınmıştır.
+The tag-arrangement tool of revAgent, currently developed as a standalone Revit add-in
+(it will be folded into revAgent later). It takes the tags of a view and arranges them in
+clean columns and rows with leaders: equal spacing, level leader shoulders, aligned elbows,
+no crossing leaders, and every leader still pointing exactly where it pointed before. A
+whole floor plan can be tagged "outside the plan" in one click with perimeter lanes.
 
-## Palet ve akış
+## Palette
 
-**ProEngineering Tools** başlıklı dar araç penceresi. Akış üç adımdır ve komut sonunda biter:
+The **revAgent tag tool** palette is a small modeless tool window opened from
+**Add-Ins → revAgent tag tool → Tag Tool**.
 
-| Adım / kontrol | İşlev |
+| Control | What it does |
 | --- | --- |
-| 1. `Get tags` | Tag'ler Revit'in kendi seçimiyle (pencere) önceden seçildiyse doğrudan alınır, **Finish gerekmez**. Seçim yoksa seçim modu (Finish) açılır. Nokta seçimi yoktur. |
-| 2. filtre (açılır liste) | Liste **seçimden** dolar: kategori / aile ve adetleri. Bir tür seçince `Tags count` filtrelenmiş adedi gösterir; `All selected tags` = hepsi. |
-| 3. `Pick direction` | **Tek tık**: kolon başlangıç noktası, kolon dik aşağı iner; filtrelenmiş tag'ler dizilir, komut biter, filtre sıfırlanır. Düğmeye **sağ tık** veya **Ctrl+tık** ile ikinci bir yön noktası da istenir (Esc = dik aşağı). Bekleyen seçim yoksa görünümde seçili tag'leri, o da yoksa son grubu yeni noktaya taşır. |
-| `Auto lanes` | Seçili (veya Get tags ile bekleyen, o da yoksa görünümdeki tüm) tag'leri, elemanlarının yayılımının çevresine otomatik türetilen kolon ve satırlara (sol/sağ kolon, üst/alt satır; kapasite yetmezse yarım adım şaşırtmalı dış halkalar) leader'lı olarak dizer. Adımlar tag ailelerinin gerçek metin ölçülerinden hesaplanır (`Spacing x` alt sınırdır), her şerit Pro Tools çekirdeğiyle yerleştirilir ve canlı ayar için ayrı grup olarak hatırlanır. Kat planlarında "tag'ler plan dışında" düzeni için. |
-| `Tags count: N` | Seçilen / filtrelenen / yerleştirilen tag sayısı |
-| `Spacing x:` `[0.6]` `-` `+` | Satır aralığı, metre (0,6 m = orijinal aracın 2 ft'i); yazdıkça veya -/+ ile (0.1 adım) canlı uygulanır |
-| `Shift x:` `[0.30]` `-` `+` | Omuz uzunluğu: metin kenarından dirseğe, metre (0,30 m = orijinal aracın 1 ft'i); canlı uygulanır |
-| durum satırı | Son işlemin özeti / hata metni |
+| `Get tags` | Reads the tags currently selected in Revit (window selection is fine, no Finish click). With nothing selected it starts a pick mode that only accepts tags (Finish to end). The selection stays pending for the next step. |
+| filter (drop-down) | Built from the pending selection: `All selected tags` or one tag category / family with its count. Narrows the pending selection. |
+| `Pick direction` | One click: the column origin. The tags are stacked straight down from that point and the command ends (the filter resets). Right-click or Ctrl+click the button to pick a second point that sets the column direction (rows, slanted columns). Without a pending selection it uses the tags selected in the view, and without those it moves the last group. |
+| `Auto lanes` | Lays the pending selection (or the selected tags, or every tag of the view) out around the elements: left/right columns and top/bottom rows derived from the elements' extents, outer rings with a half-pitch stagger when a side is full. Elements go to the side of their bearing from the centroid, so leaders of different sides fan outwards and do not cross. |
+| `Lane per family` (check box) | Auto lanes option: on every side the families follow each other along the same line, one run per family with a gap between runs, ordered like their elements along that side. Each run shows one kind of tag and no leader crosses another family's texts. A second ring is opened only when a line overflows. |
+| `Tags count: N` | Selected / filtered / placed tag count. |
+| `Spacing x:` `[0.6]` `-` `+` | Pitch between tags along the column or row, in meters. Typing or stepping (0.1) re-lays the affected groups out live. It is a minimum: the pitch never drops below the text height (rows: text width), so tags never overlap. |
+| `Shift x:` `[0.30]` `-` `+` | Leader shoulder length from the text edge to the elbow, in meters. Live as well. |
+| status line | Result of the last action, or the error text. |
 
-Canlı değerler (Spacing x / Shift x) şuna uygulanır: görünümde **seçili tag varsa** o gruba
-(daha önce dizilmişse aynı orijin ve yönle; hiç dizilmemişse en üstteki tag sabit kalır), seçim
-yoksa **son yerleştirilen gruba**.
+Live adjustments apply to the groups that contain the tags selected in the view (several
+groups at once if the selection spans them; selected tags that belong to no group become a
+new group starting at their first tag), or, with nothing selected, to every group of the last
+action (one column, or all Auto lanes).
 
-## Davranış (videodaki gibi)
+## What a layout does
 
-- Yalnızca `IndependentTag` öğeleri seçilebilir (pencere/box seçim destekli).
-- İlk tag başı tıklanan noktaya gelir, sonrakiler **Spacing x** aralığıyla kolon ekseni boyunca
-  dizilir: `Head(i) = Origin + i × Spacing × Axis`. Varsayılan eksen görünümün aşağı yönüdür.
-  **Metin kenarı hizası:** her tag ailesinin etiket geometrisi bir kez okunur (`EditFamily`,
-  önbelleklenir) ve metin genişliği yazı tipinin ilerleme genişlikleriyle hesaplanır (Revit
-  "Text Size" = büyük harf yüksekliği, Arial için em = boyut/0,716; aile probe'undaki etiket
-  kutusu genişlikleriyle doğrulandı). Metnin elemanlara bakan kenarı kolon çizgisine oturur; böylece
-  orijine ortalı (`M_Pipe/Duct Size Tag`) veya ötelenmiş (`M_Diffuser Tag`) etiketler de aynı
-  hizaya gelir ve omuzlar eşit görünür. Metin bloğunun merkezi satıra oturur; Revit leader'ı
-  metin kenarının orta noktasından başlattığı için satır yüksekliğindeki dirsek sıfır açılı (yatay)
-  bir omuz verir. Aile okunamazsa baş kolon çizgisine konur. Çok satırlı tag'lerde **Spacing x**
-  değerini metin yüksekliğinden büyük tutun.
-- **Ok uçları korunur.** Taşımadan önce her leader'ın ucu "Free" yapılır ve baktığı nokta
-  kaydedilir; taşımadan sonra aynı noktaya geri yazılır. Böylece ok, kullanıcının/Revit'in daha
-  önce seçtiği noktada kalır (Attached uçta Revit ucu elemanın en yakın, çoğu kez görünmeyen
-  noktasına kaydırıyordu). Yan etki: leader uçları "Free" olur; eleman taşınırsa ok takip etmez.
-- **Sıralama ve kesişme.** Satırlar, okların baktığı noktalara göre kolon merkezinden açısal
-  yelpaze şeklinde sıralanır; ardından kesişen her leader çifti takas edilir. Her takas toplam
-  leader uzunluğunu kısalttığı için işlem kesişme kalmayınca durur.
-- **Shift x** — her leader'ın dirseği kolon çizgisinden bu kadar uzağa, kolona dik ve **elemanlara
-  doğru** yerleştirilir; dirsekler hizalı, görünen omuzlar eşit uzunluktadır. Yön otomatik seçilir
-  (elemanlar kolonun hangi tarafındaysa oraya); değerin işareti yönü değiştirmez.
-- Leader'lar kapalıysa açılır; tag'ler host elemanlara bağlı kalır.
-- **Canlı düzeltme (post-correction)** — son dizilen grup hafızada tutulur; değer değiştikçe
-  (300 ms gecikmeyle, Enter ile anında) kolon yeniden dizilir. Önceki gruplar etkilenmez.
-- Kilitli 3B, plan ve kesit görünümlerinde çalışır. 3B görünümde nokta seçimi için tag'lerin
-  düzleminde, ekrana paralel geçici bir çalışma düzlemi oluşturulur ve seçim sonrası silinir.
-- Değerler **metre** girilir, Revit içi birimine çevrilir. Orijinal palet birim göstermez; videodaki
-  kısa omuz ve sıkı aralık, orijinalin değerleri doğrudan Revit iç birimi (feet) olarak kullandığına
-  işaret eder: "Spacing 2" ≈ 0,6 m, "Shift 1.00" ≈ 0,3 m. Varsayılanlar buna göre seçildi.
+- **Rows.** The first tag lands on the picked origin, the others follow along the column axis
+  at the pitch: `Row(i) = origin + i × pitch × axis`. The axis is straight down the view unless a
+  direction point was picked.
+- **Text alignment.** The label geometry of every tag family is read once (from the family
+  document, cached) and the text width is computed from the font's advance widths, so the text
+  block of each tag is centred on its row with its edge facing the elements exactly on the
+  column line, whatever the family's origin convention. Families whose geometry cannot be read
+  fall back to placing the tag head on the line.
+- **Leaders.** Leader ends are switched to free and restored after the move, so arrows stay
+  where they pointed instead of sliding to the nearest, often hidden, point of the element.
+  Every leader gets an elbow one Shift x away from the column line towards the elements: level
+  shoulders, aligned elbows, equal visible shoulder length. Leaders are turned on when missing.
+- **Order.** Rows are ordered by an angular fan from the column centre towards the leader
+  ends, then any two crossing leaders (diagonals and shoulders) are swapped until none cross.
+- **Views.** Locked 3D, plan and section views. In 3D views a temporary work plane through
+  the tags, parallel to the screen, is used for the point picks and removed afterwards.
+- **Units.** Values are entered in meters and converted to internal units.
 
-## Kurulum
+## Installation
 
-1. Derleyin:
+1. Build:
    ```
    dotnet build -c Release
    ```
-2. Çıktıyı Revit 2027 eklenti klasörüne kopyalayın (Windows):
+2. Copy the output next to a manifest in the Revit 2027 add-ins folder:
    ```
    %AppData%\Autodesk\Revit\Addins\2027\RevitSetTags\RevitSetTags.dll
    %AppData%\Autodesk\Revit\Addins\2027\RevitSetTags.addin
    ```
-   `.addin` içindeki `<Assembly>` yolunu DLL'in tam yolu yapın (göreli `RevitSetTags.dll` de
-   çalışır; DLL o zaman `.addin` ile aynı klasörde durmalıdır).
-3. Revit 2027'yi başlatın → **Pro Tools** sekmesi → **Tag Tools** paneli → **Set Tags**.
+   Put the full path of the DLL in the manifest's `<Assembly>` element (a relative
+   `RevitSetTags.dll` also works when the DLL sits next to the manifest).
+3. Start Revit 2027 → **Add-Ins** → **revAgent tag tool** → **Tag Tool**.
 
-> Not: Derleme .NET 10 hedefler (`net10.0-windows`); Revit 2027 çalışma zamanı .NET 10'dur ve
-> Nice3point 2027.2.0 paketleri yüklü Revit 2027.2 (27.2.0.39) ile aynı API sürümünü taşır.
-> `IndependentTag.SetLeaderElbow` (2022+) ve `GetTaggedLocalElements()` kullanıldığı için eski
-> sürümlerde paket sürümü ve hedef çerçeveyle birlikte kod da uyarlanmalıdır.
-> Revit 2027 bu makinede imzasız eklenti için güvenlik uyarısı göstermedi; farklı kurulumlarda
-> ilk açılışta "Always Load" seçmeniz gerekebilir.
+> The project targets `net10.0-windows`; Revit 2027 runs on .NET 10 and the
+> Nice3point 2027.2.0 API packages match Revit 2027.2 (27.2.0.39). `IndependentTag.SetLeaderElbow`
+> (2022+) and `GetTaggedLocalElements()` are used, so older Revit versions need code changes as
+> well as package changes. Revit 2027 did not show the unsigned add-in prompt on the
+> development machine; other installations may ask for "Always Load" on first start.
 
-## Kullanım
+## Typical use
 
-1. Şeritte **Pro Tools → Set Tags**'e tıklayın; palet açılır.
-2. Tag'leri Revit'te pencereyle seçin → **Get tags** (Finish yok).
-3. Gerekirse filtreden bir tür seçin (ör. `Pipe Tags (10)`).
-4. **Pick direction** → kolonun başlangıç noktasını tıklayın; tag'ler dik aşağı dizilir, filtre
-   sıfırlanır. Eğik/yatay dizim için düğmeye sağ tık (veya Ctrl+tık) ve ikinci nokta.
-5. Bütün bir kat planı için: tag'leri seçin (veya hiçbir şey seçmeyin) → **Auto lanes**; tag'ler
-   bina çevresindeki şeritlere leader'larıyla dizilir. Büyük yazı için önce görünüm ölçeğini
-   (ör. 1:200) ayarlayın; adımlar ölçeğe göre otomatik büyür.
-6. İnce ayar: görünümde grubu seçili tutarak (veya seçim yoksa son grup için) **Spacing x** /
-   **Shift x** değerlerini yazın veya -/+ ile değiştirin; canlı güncellenir. Her işlem tek bir
-   "Order Tags" transaction'ıdır, Ctrl+Z ile geri alınabilir.
+1. Select tags with Revit's selection tool → **Get tags**.
+2. Optionally pick a family in the filter.
+3. **Pick direction** → click the column origin; the tags stack downwards. Right-click or
+   Ctrl+click for a direction point (horizontal rows, slanted columns).
+4. For a whole floor plan: select the tags (or nothing) → tick **Lane per family** if wanted
+   → **Auto lanes**. Set the view scale first (for example 1:200); pitches follow the text size.
+5. Fine-tune with **Spacing x** / **Shift x** while the group is selected (or nothing is
+   selected for the last action). Each action is one "Order Tags" transaction, so Ctrl+Z
+   undoes it.
 
-## Varsayımlar ve sınırlar
+## Limits
 
-- Video 55 saniyelik ekran kaydıdır; kaynak kod gösterilmez. Dizim, sıralama ve omuz davranışı
-  videodaki sonuçtan çıkarılmıştır; birim ve `Pick direction` düğmesinin tam işlevi videoda
-  gösterilmediği için burada belgelenen yorumlar kullanıldı.
-- Dirsek ayarı `HasLeaderElbow`/`SetLeaderElbow` destekleyen leader'lara uygulanır; düz leader
-  zorunlu tag türlerinde omuz adımı sessizce atlanır, tag yine taşınır.
-- 3B görünüm kilitli olmalıdır (Revit tag'leri yalnızca kilitli 3B görünümlerde tutar).
+- Tags whose families use straight-only leaders keep their placement but get no elbow.
+- 3D views must be locked (Revit keeps tags only in locked 3D views).
+- Auto lanes uses a plain perimeter ring; it does not exploit notches of L-shaped plans, so
+  some leaders get long on such plans.
+- Tag bounding boxes in 3D views are not usable for text measurement; the text metrics come
+  from the family labels instead, which is why mixed-family columns still line up.
 
-## Proje yapısı
+## Project layout
 
-| Dosya | Görev |
+| File | Role |
 | --- | --- |
-| `App.cs` | Şerit sekmesi/paneli ve düğme kaydı |
-| `Commands/ShowSetTagsCommand.cs` | Modeless paleti açan komut |
-| `UI/SetTagsWindow.cs` | Palet: Get tags / seçim filtresi / Pick direction / Auto lanes / Spacing x / Shift x (-/+), canlı güncelleme |
-| `Handlers/SetTagsHandler.cs` | API bağlamında çalışan `IExternalEventHandler`: seçim, filtre, orijin/yön seçimi (3B için geçici çalışma düzlemi), grup hafızası, canlı düzeltme hedefi |
-| `Services/TagOrderingService.cs` | Kolon yerleştirme, sıralama, leader omzu ve metin ölçüm çekirdeği |
-| `Services/LaneLayoutService.cs` | Auto lanes: çevre şeritlerinin türetilmesi, kapasite/atama, şerit başına `PlaceColumn` |
-| `RevitSetTags.addin` | Revit eklenti manifest'i |
+| `App.cs` | "revAgent tag tool" panel and icon button on the Add-Ins tab |
+| `Commands/ShowSetTagsCommand.cs` | Opens the modeless palette |
+| `UI/SetTagsWindow.cs` | Palette: Get tags / filter / Pick direction / Auto lanes (+ Lane per family) / Spacing x / Shift x with steppers, live updates |
+| `Handlers/SetTagsHandler.cs` | `IExternalEventHandler`: selection, filter, origin/direction picks (temporary work plane in 3D), group memory, live adjustment targets |
+| `Services/TagOrderingService.cs` | Column core: text metrics, leader end preservation, ordering and uncrossing, shoulders and elbows |
+| `Services/LaneLayoutService.cs` | Auto lanes: perimeter lanes, sector assignment, per-family runs, capacity, one `PlaceColumn` per lane or run |
+| `Resources/tagtool-16.png`, `tagtool-32.png` | Ribbon icons (embedded resources) |
+| `RevitSetTags.addin` | Revit manifest (revAgent tag tool, vendor DPE) |

@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
@@ -10,6 +11,11 @@
     <RootNamespace>RevitSetTags</RootNamespace>
     <AssemblyName>RevitSetTags</AssemblyName>
   </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\tagtool-16.png" LogicalName="RevitSetTags.Resources.tagtool-16.png" />
+    <EmbeddedResource Include="Resources\tagtool-32.png" LogicalName="RevitSetTags.Resources.tagtool-32.png" />
+  </ItemGroup>
 
   <ItemGroup>
     <!-- Revit 2027 API reference assemblies (compile-time only). -->

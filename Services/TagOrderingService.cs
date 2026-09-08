@@ -15,6 +15,7 @@ namespace RevitSetTags.Services
         public int ElbowsSet;
         public int EndsKept;
         public int Measured;
+        public double PitchUsed;   // internal units; may exceed the requested spacing so texts never overlap
 
         public override string ToString()
         {
@@ -23,8 +24,7 @@ namespace RevitSetTags.Services
     }
 
     /// <summary>
-    /// Core behavior reverse-engineered from the "Revit API (C#) - Tags ordering"
-    /// demo (ProEngineering Tools palette):
+    /// Column core of the revAgent tag tool:
     ///
     /// - Tags are stacked from the picked origin along the column axis (straight
     ///   down the view unless a direction was picked): Row(i) = origin + i * spacing * axis.
@@ -38,7 +38,7 @@ namespace RevitSetTags.Services
     ///   from the column line towards the elements (elbows aligned, shoulders
     ///   equal), and the rows are ordered so that the leaders fan out without crossing.
     /// - Re-running with new values on the same tags/origin gives the live
-    ///   post-correction seen in the demo.
+    ///   post-correction of the palette.
     /// </summary>
     public static class TagOrderingService
     {
@@ -218,6 +218,7 @@ namespace RevitSetTags.Services
             double elbowS = s0 + sign * shift;
 
             // 3. Text block per tag: edge facing the elements and block centre (0 when the family is unknown).
+            double maxExtent = 0;
             foreach (TagItem item in items)
             {
                 if (TextMetrics(doc, view, item.Tag, shoulderAxis, right, up, sign, out double edge, out XYZ center))
@@ -225,8 +226,19 @@ namespace RevitSetTags.Services
                     item.EdgeOffset = edge;
                     item.CenterOffset = center;
                     result.Measured++;
+                    maxExtent = Math.Max(maxExtent, TextExtentAlong(doc, view, item.Tag, axis, right, up));
                 }
             }
+
+            // The requested spacing is a minimum: rows of wide texts and columns of tall
+            // texts get the pitch their text needs, plus a small gap.
+            double textHeight = 0.0082 * (view.Scale > 0 ? view.Scale : 100);
+            if (maxExtent > 0)
+            {
+                spacing = Math.Max(spacing, maxExtent + 0.4 * textHeight);
+            }
+
+            result.PitchUsed = spacing;
 
             // 4. Order the rows: angular fan from the column centre, then remove crossings.
             List<TagItem> ordered = OrderRows(items, axis, shoulderAxis, s0, a0, spacing, elbowS, sign);
@@ -385,6 +397,19 @@ namespace RevitSetTags.Services
             edgeOffset = (sign > 0 ? corners.Max() : corners.Min()) * scale;
             centerOffset = (right * ((left + rightEdge) * 0.5) + up * ((bottom + top) * 0.5)) * scale;
             return true;
+        }
+
+        /// <summary>Extent of the tag's text block along a view-plane axis (model units); 0 when unknown.</summary>
+        private static double TextExtentAlong(Document doc, View view, IndependentTag tag, XYZ axis, XYZ right, XYZ up)
+        {
+            if (!ComputeBlock(doc, view, tag, out double left, out double rightEdge, out double bottom, out double top, out double scale))
+            {
+                return 0;
+            }
+
+            double w = (rightEdge - left) * scale;
+            double h = (top - bottom) * scale;
+            return Math.Abs(axis.DotProduct(right)) * w + Math.Abs(axis.DotProduct(up)) * h;
         }
 
         /// <summary>Sum of the glyph advance widths of the text, in em units, measured with GDI.</summary>
@@ -648,7 +673,12 @@ namespace RevitSetTags.Services
                     {
                         double ai = a0 + spacing * i;
                         double aj = a0 + spacing * j;
-                        if (SegmentsCross(elbowS, ai, P(ordered[i], shoulderAxis, axis), elbowS, aj, P(ordered[j], shoulderAxis, axis)))
+                        double[] pi = P(ordered[i], shoulderAxis, axis);
+                        double[] pj = P(ordered[j], shoulderAxis, axis);
+                        bool crossing = SegmentsCross(elbowS, ai, pi, elbowS, aj, pj)
+                            || SegmentsCross(elbowS, ai, pi, s0, aj, new[] { elbowS, aj })
+                            || SegmentsCross(elbowS, aj, pj, s0, ai, new[] { elbowS, ai });
+                        if (crossing)
                         {
                             TagItem tmp = ordered[i];
                             ordered[i] = ordered[j];

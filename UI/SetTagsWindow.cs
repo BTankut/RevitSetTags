@@ -15,7 +15,7 @@ using ComboBox = System.Windows.Forms.ComboBox;
 namespace RevitSetTags.UI
 {
     /// <summary>
-    /// Modeless palette shown by the "Set Tags" ribbon button. Workflow:
+    /// Modeless palette shown by the "Tag Tool" ribbon button. Workflow:
     /// Get tags (select) → optional filter built from that selection →
     /// Pick direction (origin + optional direction point) → done, filter resets.
     /// "Spacing x" / "Shift x" (typing or -/+) re-lay out the tags selected in
@@ -34,6 +34,7 @@ namespace RevitSetTags.UI
         private Button _getTagsButton;
         private Button _pickDirectionButton;
         private Button _autoLanesButton;
+        private CheckBox _lanePerFamilyBox;
         private ComboBox _filterBox;
         private Label _countLabel;
         private TextBox _spacingBox;
@@ -67,12 +68,12 @@ namespace RevitSetTags.UI
 
         private void BuildUi()
         {
-            Text = "ProEngineering Tools";
+            Text = "revAgent tag tool";
             FormBorderStyle = FormBorderStyle.FixedToolWindow;
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.CenterScreen;
             TopMost = true;
-            ClientSize = new Size(184, 252);
+            ClientSize = new Size(184, 278);
 
             _getTagsButton = new Button
             {
@@ -114,13 +115,23 @@ namespace RevitSetTags.UI
                 Width = 172,
                 Height = 24,
             };
-            _autoLanesButton.Click += OnAutoLanesClicked;
+            _autoLanesButton.Click += (s, e) => StartAutoLanes(_lanePerFamilyBox.Checked);
+
+            _lanePerFamilyBox = new CheckBox
+            {
+                Text = "Lane per family",
+                Left = 8,
+                Top = 112,
+                Width = 170,
+                Height = 22,
+                Checked = false,
+            };
 
             _countLabel = new Label
             {
                 Text = "Tags count: 0",
                 Left = 8,
-                Top = 118,
+                Top = 144,
                 Width = 170,
                 Height = 18,
             };
@@ -129,7 +140,7 @@ namespace RevitSetTags.UI
             {
                 Text = "Spacing x:",
                 Left = 8,
-                Top = 150,
+                Top = 176,
                 Width = 68,
                 Height = 18,
             };
@@ -138,22 +149,22 @@ namespace RevitSetTags.UI
             {
                 Text = "0.6",
                 Left = 78,
-                Top = 146,
+                Top = 172,
                 Width = 52,
             };
             _spacingBox.TextChanged += OnValueChanged;
             _spacingBox.KeyDown += OnValueKeyDown;
 
-            Button spacingMinus = MakeStepButton("-", 134, 146);
+            Button spacingMinus = MakeStepButton("-", 134, 172);
             spacingMinus.Click += (s, e) => StepValue(_spacingBox, -Step, false);
-            Button spacingPlus = MakeStepButton("+", 156, 146);
+            Button spacingPlus = MakeStepButton("+", 156, 172);
             spacingPlus.Click += (s, e) => StepValue(_spacingBox, +Step, false);
 
             var shiftLabel = new Label
             {
                 Text = "Shift x:",
                 Left = 8,
-                Top = 180,
+                Top = 206,
                 Width = 68,
                 Height = 18,
             };
@@ -162,22 +173,22 @@ namespace RevitSetTags.UI
             {
                 Text = "0.30",
                 Left = 78,
-                Top = 176,
+                Top = 202,
                 Width = 52,
             };
             _shiftBox.TextChanged += OnValueChanged;
             _shiftBox.KeyDown += OnValueKeyDown;
 
-            Button shiftMinus = MakeStepButton("-", 134, 176);
+            Button shiftMinus = MakeStepButton("-", 134, 202);
             shiftMinus.Click += (s, e) => StepValue(_shiftBox, -Step, true);
-            Button shiftPlus = MakeStepButton("+", 156, 176);
+            Button shiftPlus = MakeStepButton("+", 156, 202);
             shiftPlus.Click += (s, e) => StepValue(_shiftBox, +Step, true);
 
             _statusLabel = new Label
             {
                 Text = "Ready.",
                 Left = 8,
-                Top = 212,
+                Top = 238,
                 Width = 170,
                 Height = 34,
                 AutoEllipsis = true,
@@ -189,6 +200,7 @@ namespace RevitSetTags.UI
             tips.SetToolTip(_filterBox, "2. Optional: keep only one tag category / family of the selection.");
             tips.SetToolTip(_pickDirectionButton, "3. Click the column origin; the column goes straight down. Right-click or Ctrl+click here to also pick a direction point. The tags are placed and the filter resets.");
             tips.SetToolTip(_autoLanesButton, "Lay the selected tags (or, with nothing selected, every tag of the view) out in columns and rows around their elements, each with a leader. Spacing x is the minimum pitch.");
+            tips.SetToolTip(_lanePerFamilyBox, "Auto lanes option: on every side, one line per tag family (largest family innermost), so each line shows one kind of tag.");
             tips.SetToolTip(_spacingBox, "Distance between tag rows, in meters (0.6 m matches the original tool: 2 ft). Applies live to the tags selected in the view, else to the last placed group.");
             tips.SetToolTip(_shiftBox, "Leader shoulder length from the text edge to the elbow, in meters (0.30 m matches the original tool: 1 ft). Applies live to the tags selected in the view, else to the last placed group.");
 
@@ -196,6 +208,7 @@ namespace RevitSetTags.UI
             Controls.Add(_filterBox);
             Controls.Add(_pickDirectionButton);
             Controls.Add(_autoLanesButton);
+            Controls.Add(_lanePerFamilyBox);
             Controls.Add(_countLabel);
             Controls.Add(spacingLabel);
             Controls.Add(_spacingBox);
@@ -340,7 +353,7 @@ namespace RevitSetTags.UI
             _event.Raise();
         }
 
-        private void OnAutoLanesClicked(object sender, EventArgs e)
+        private void StartAutoLanes(bool lanePerFamily)
         {
             _liveTimer.Stop();
             if (!TryReadValues(out double spacing, out double shift))
@@ -351,7 +364,8 @@ namespace RevitSetTags.UI
             _handler.SpacingMeters = spacing;
             _handler.ShiftMeters = shift;
             _handler.Filter = _filterBox.SelectedItem as TagTypeFilter;
-            _statusLabel.Text = "Laying tags out in perimeter lanes...";
+            _handler.LanePerFamily = lanePerFamily;
+            _statusLabel.Text = lanePerFamily ? "Laying tags out, one lane per family..." : "Laying tags out in perimeter lanes...";
             _handler.Mode = HandlerMode.AutoLanes;
             _event.Raise();
         }
