@@ -15,6 +15,7 @@ namespace RevitSetTags.Handlers
         None,
         GetTags,
         PlaceColumn,
+        AutoLanes,
         Relayout
     }
 
@@ -128,6 +129,9 @@ namespace RevitSetTags.Handlers
                             break;
                         case HandlerMode.PlaceColumn:
                             status = RunPlaceColumn(uidoc);
+                            break;
+                        case HandlerMode.AutoLanes:
+                            status = RunAutoLanes(uidoc);
                             break;
                         case HandlerMode.Relayout:
                             status = RunRelayout(uidoc);
@@ -260,6 +264,65 @@ namespace RevitSetTags.Handlers
             Filter = null;
             Bridge?.ReportPlaced();
             return $"Tags count: {tags.Count}. {result} ({source})";
+        }
+
+        /// <summary>
+        /// Auto lanes: the pending selection (filtered), else the tags selected in the
+        /// view, else every tag of the view, laid out in perimeter columns and rows
+        /// around their elements. Each lane is remembered as a group.
+        /// </summary>
+        private string RunAutoLanes(UIDocument uidoc)
+        {
+            Document doc = uidoc.Document;
+            View view = uidoc.ActiveView;
+            TagTypeFilter filter = Filter;
+
+            string source = "selection";
+            List<IndependentTag> tags = PendingTags(doc, view);
+            if (tags.Count == 0)
+            {
+                tags = SelectedTags(uidoc, view);
+            }
+
+            if (tags.Count == 0)
+            {
+                tags = new FilteredElementCollector(doc, view.Id).OfClass(typeof(IndependentTag)).Cast<IndependentTag>()
+                    .Where(t => !t.IsOrphaned).ToList();
+                source = "whole view";
+            }
+
+            if (filter != null)
+            {
+                tags = tags.Where(filter.Matches).ToList();
+            }
+
+            if (tags.Count == 0)
+            {
+                return "No tags to lay out.";
+            }
+
+            TagOrderingService.PrepareTextMetrics(doc, tags);
+
+            List<LaneResult> lanes;
+            using (Transaction t = new Transaction(doc, "Auto lanes"))
+            {
+                t.Start();
+                lanes = LaneLayoutService.AutoLanes(doc, view, tags, SpacingInternal(), ShiftInternal());
+                t.Commit();
+            }
+
+            foreach (LaneResult lane in lanes)
+            {
+                RememberSession(doc, view, lane.Tags, lane.Origin, lane.Direction);
+            }
+
+            _pending = null;
+            Filter = null;
+            Bridge?.ReportPlaced();
+            int placed = lanes.Sum(l => l.Result.Placed);
+            int skipped = lanes.Sum(l => l.Result.Skipped);
+            string detail = string.Join(", ", lanes.Select(l => l.Name + " " + l.Tags.Count));
+            return $"Tags count: {tags.Count}. Auto lanes ({source}): {lanes.Count} lanes, {placed} placed, {skipped} skipped. {detail}";
         }
 
         /// <summary>Live "Spacing x" / "Shift x": selected tags first, else the last placed group.</summary>

@@ -268,14 +268,59 @@ namespace RevitSetTags.Services
         }
 
         /// <summary>
-        /// Text block of the tag relative to its head (model units): the signed distance
-        /// along the shoulder axis to the edge facing the elements, and the block centre.
-        /// False when the family geometry is unknown.
+        /// Where a tag's leader points: the free leader end when there is one, else
+        /// the centre of the tagged element, else the tag head. Read-only.
         /// </summary>
-        private static bool TextMetrics(Document doc, View view, IndependentTag tag, XYZ shoulderAxis, XYZ right, XYZ up, int sign, out double edgeOffset, out XYZ centerOffset)
+        public static XYZ GetAnchor(IndependentTag tag)
         {
-            edgeOffset = 0;
-            centerOffset = XYZ.Zero;
+            try
+            {
+                if (tag.HasLeader && tag.LeaderEndCondition == LeaderEndCondition.Free)
+                {
+                    foreach (Reference reference in tag.GetTaggedReferences())
+                    {
+                        try
+                        {
+                            return tag.GetLeaderEnd(reference);
+                        }
+                        catch
+                        {
+                            // Hidden leader; try the next reference.
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Fall through to the element centre.
+            }
+
+            return TryGetElementAnchor(tag) ?? GetHeadPosition(tag);
+        }
+
+        /// <summary>
+        /// Size of the tag's text block in model units (view plane), from the
+        /// family label geometry and the font's advance widths. False when unknown.
+        /// </summary>
+        public static bool TryMeasureTextBlock(Document doc, View view, IndependentTag tag, out double width, out double height)
+        {
+            width = 0;
+            height = 0;
+            if (!ComputeBlock(doc, view, tag, out double left, out double rightEdge, out double bottom, out double top, out double scale))
+            {
+                return false;
+            }
+
+            width = (rightEdge - left) * scale;
+            height = (top - bottom) * scale;
+            return true;
+        }
+
+        /// <summary>Text block in family (paper) units relative to the origin; x = view right, y = view up.</summary>
+        private static bool ComputeBlock(Document doc, View view, IndependentTag tag, out double left, out double rightEdge, out double bottom, out double top, out double scale)
+        {
+            left = rightEdge = bottom = top = 0;
+            scale = view.Scale > 0 ? view.Scale : 100;
             try
             {
                 if (tag.TagOrientation != TagOrientation.Horizontal)
@@ -295,8 +340,7 @@ namespace RevitSetTags.Services
                     return false;
                 }
 
-                // Text block in family (paper) units relative to the origin; x = view right, y = view up.
-                double left = double.MaxValue, rightEdge = double.MinValue, bottom = double.MaxValue, top = double.MinValue;
+                left = double.MaxValue; rightEdge = double.MinValue; bottom = double.MaxValue; top = double.MinValue;
                 foreach (LabelInfo label in labels)
                 {
                     double width = AdvanceEm(text, label.Font, label.Bold, label.Italic) * (label.Size / CapHeightRatio) * label.WidthFactor;
@@ -309,24 +353,38 @@ namespace RevitSetTags.Services
                     top = Math.Max(top, b + height);
                 }
 
-                double scale = view.Scale > 0 ? view.Scale : 100;
-                double cs = shoulderAxis.DotProduct(right);
-                double cu = shoulderAxis.DotProduct(up);
-                var corners = new[]
-                {
-                    left * cs + bottom * cu, left * cs + top * cu, rightEdge * cs + bottom * cu, rightEdge * cs + top * cu,
-                };
-
-                edgeOffset = (sign > 0 ? corners.Max() : corners.Min()) * scale;
-                centerOffset = (right * ((left + rightEdge) * 0.5) + up * ((bottom + top) * 0.5)) * scale;
                 return true;
             }
             catch
             {
-                edgeOffset = 0;
-                centerOffset = XYZ.Zero;
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Text block of the tag relative to its head (model units): the signed distance
+        /// along the shoulder axis to the edge facing the elements, and the block centre.
+        /// False when the family geometry is unknown.
+        /// </summary>
+        private static bool TextMetrics(Document doc, View view, IndependentTag tag, XYZ shoulderAxis, XYZ right, XYZ up, int sign, out double edgeOffset, out XYZ centerOffset)
+        {
+            edgeOffset = 0;
+            centerOffset = XYZ.Zero;
+            if (!ComputeBlock(doc, view, tag, out double left, out double rightEdge, out double bottom, out double top, out double scale))
+            {
+                return false;
+            }
+
+            double cs = shoulderAxis.DotProduct(right);
+            double cu = shoulderAxis.DotProduct(up);
+            var corners = new[]
+            {
+                left * cs + bottom * cu, left * cs + top * cu, rightEdge * cs + bottom * cu, rightEdge * cs + top * cu,
+            };
+
+            edgeOffset = (sign > 0 ? corners.Max() : corners.Min()) * scale;
+            centerOffset = (right * ((left + rightEdge) * 0.5) + up * ((bottom + top) * 0.5)) * scale;
+            return true;
         }
 
         /// <summary>Sum of the glyph advance widths of the text, in em units, measured with GDI.</summary>

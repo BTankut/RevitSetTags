@@ -18,6 +18,7 @@ orijinal paletin ekran görüntüsünden alınmıştır.
 | 1. `Get tags` | Tag'ler Revit'in kendi seçimiyle (pencere) önceden seçildiyse doğrudan alınır, **Finish gerekmez**. Seçim yoksa seçim modu (Finish) açılır. Nokta seçimi yoktur. |
 | 2. filtre (açılır liste) | Liste **seçimden** dolar: kategori / aile ve adetleri. Bir tür seçince `Tags count` filtrelenmiş adedi gösterir; `All selected tags` = hepsi. |
 | 3. `Pick direction` | **Tek tık**: kolon başlangıç noktası, kolon dik aşağı iner; filtrelenmiş tag'ler dizilir, komut biter, filtre sıfırlanır. Düğmeye **sağ tık** veya **Ctrl+tık** ile ikinci bir yön noktası da istenir (Esc = dik aşağı). Bekleyen seçim yoksa görünümde seçili tag'leri, o da yoksa son grubu yeni noktaya taşır. |
+| `Auto lanes` | Seçili (veya Get tags ile bekleyen, o da yoksa görünümdeki tüm) tag'leri, elemanlarının yayılımının çevresine otomatik türetilen kolon ve satırlara (sol/sağ kolon, üst/alt satır; kapasite yetmezse yarım adım şaşırtmalı dış halkalar) leader'lı olarak dizer. Adımlar tag ailelerinin gerçek metin ölçülerinden hesaplanır (`Spacing x` alt sınırdır), her şerit Pro Tools çekirdeğiyle yerleştirilir ve canlı ayar için ayrı grup olarak hatırlanır. Kat planlarında "tag'ler plan dışında" düzeni için. |
 | `Tags count: N` | Seçilen / filtrelenen / yerleştirilen tag sayısı |
 | `Spacing x:` `[0.6]` `-` `+` | Satır aralığı, metre (0,6 m = orijinal aracın 2 ft'i); yazdıkça veya -/+ ile (0.1 adım) canlı uygulanır |
 | `Shift x:` `[0.30]` `-` `+` | Omuz uzunluğu: metin kenarından dirseğe, metre (0,30 m = orijinal aracın 1 ft'i); canlı uygulanır |
@@ -89,7 +90,10 @@ yoksa **son yerleştirilen gruba**.
 3. Gerekirse filtreden bir tür seçin (ör. `Pipe Tags (10)`).
 4. **Pick direction** → kolonun başlangıç noktasını tıklayın; tag'ler dik aşağı dizilir, filtre
    sıfırlanır. Eğik/yatay dizim için düğmeye sağ tık (veya Ctrl+tık) ve ikinci nokta.
-5. İnce ayar: görünümde grubu seçili tutarak (veya seçim yoksa son grup için) **Spacing x** /
+5. Bütün bir kat planı için: tag'leri seçin (veya hiçbir şey seçmeyin) → **Auto lanes**; tag'ler
+   bina çevresindeki şeritlere leader'larıyla dizilir. Büyük yazı için önce görünüm ölçeğini
+   (ör. 1:200) ayarlayın; adımlar ölçeğe göre otomatik büyür.
+6. İnce ayar: görünümde grubu seçili tutarak (veya seçim yoksa son grup için) **Spacing x** /
    **Shift x** değerlerini yazın veya -/+ ile değiştirin; canlı güncellenir. Her işlem tek bir
    "Order Tags" transaction'ıdır, Ctrl+Z ile geri alınabilir.
 
@@ -108,7 +112,8 @@ yoksa **son yerleştirilen gruba**.
 | --- | --- |
 | `App.cs` | Şerit sekmesi/paneli ve düğme kaydı |
 | `Commands/ShowSetTagsCommand.cs` | Modeless paleti açan komut |
-| `UI/SetTagsWindow.cs` | Palet: Get tags / seçim filtresi / Pick direction / Spacing x / Shift x (-/+), canlı güncelleme |
+| `UI/SetTagsWindow.cs` | Palet: Get tags / seçim filtresi / Pick direction / Auto lanes / Spacing x / Shift x (-/+), canlı güncelleme |
 | `Handlers/SetTagsHandler.cs` | API bağlamında çalışan `IExternalEventHandler`: seçim, filtre, orijin/yön seçimi (3B için geçici çalışma düzlemi), grup hafızası, canlı düzeltme hedefi |
-| `Services/TagOrderingService.cs` | Kolon yerleştirme, sıralama ve leader omzu çekirdeği |
+| `Services/TagOrderingService.cs` | Kolon yerleştirme, sıralama, leader omzu ve metin ölçüm çekirdeği |
+| `Services/LaneLayoutService.cs` | Auto lanes: çevre şeritlerinin türetilmesi, kapasite/atama, şerit başına `PlaceColumn` |
 | `RevitSetTags.addin` | Revit eklenti manifest'i |

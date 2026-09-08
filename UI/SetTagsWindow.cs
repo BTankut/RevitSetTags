@@ -33,6 +33,7 @@ namespace RevitSetTags.UI
 
         private Button _getTagsButton;
         private Button _pickDirectionButton;
+        private Button _autoLanesButton;
         private ComboBox _filterBox;
         private Label _countLabel;
         private TextBox _spacingBox;
@@ -71,7 +72,7 @@ namespace RevitSetTags.UI
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.CenterScreen;
             TopMost = true;
-            ClientSize = new Size(184, 226);
+            ClientSize = new Size(184, 252);
 
             _getTagsButton = new Button
             {
@@ -105,11 +106,21 @@ namespace RevitSetTags.UI
             _pickDirectionButton.Click += (s, e) => StartPlaceColumn((ModifierKeys & Keys.Control) == Keys.Control);
             _pickDirectionButton.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) StartPlaceColumn(true); };
 
+            _autoLanesButton = new Button
+            {
+                Text = "Auto lanes",
+                Left = 6,
+                Top = 86,
+                Width = 172,
+                Height = 24,
+            };
+            _autoLanesButton.Click += OnAutoLanesClicked;
+
             _countLabel = new Label
             {
                 Text = "Tags count: 0",
                 Left = 8,
-                Top = 92,
+                Top = 118,
                 Width = 170,
                 Height = 18,
             };
@@ -118,7 +129,7 @@ namespace RevitSetTags.UI
             {
                 Text = "Spacing x:",
                 Left = 8,
-                Top = 124,
+                Top = 150,
                 Width = 68,
                 Height = 18,
             };
@@ -127,22 +138,22 @@ namespace RevitSetTags.UI
             {
                 Text = "0.6",
                 Left = 78,
-                Top = 120,
+                Top = 146,
                 Width = 52,
             };
             _spacingBox.TextChanged += OnValueChanged;
             _spacingBox.KeyDown += OnValueKeyDown;
 
-            Button spacingMinus = MakeStepButton("-", 134, 120);
+            Button spacingMinus = MakeStepButton("-", 134, 146);
             spacingMinus.Click += (s, e) => StepValue(_spacingBox, -Step, false);
-            Button spacingPlus = MakeStepButton("+", 156, 120);
+            Button spacingPlus = MakeStepButton("+", 156, 146);
             spacingPlus.Click += (s, e) => StepValue(_spacingBox, +Step, false);
 
             var shiftLabel = new Label
             {
                 Text = "Shift x:",
                 Left = 8,
-                Top = 154,
+                Top = 180,
                 Width = 68,
                 Height = 18,
             };
@@ -151,22 +162,22 @@ namespace RevitSetTags.UI
             {
                 Text = "0.30",
                 Left = 78,
-                Top = 150,
+                Top = 176,
                 Width = 52,
             };
             _shiftBox.TextChanged += OnValueChanged;
             _shiftBox.KeyDown += OnValueKeyDown;
 
-            Button shiftMinus = MakeStepButton("-", 134, 150);
+            Button shiftMinus = MakeStepButton("-", 134, 176);
             shiftMinus.Click += (s, e) => StepValue(_shiftBox, -Step, true);
-            Button shiftPlus = MakeStepButton("+", 156, 150);
+            Button shiftPlus = MakeStepButton("+", 156, 176);
             shiftPlus.Click += (s, e) => StepValue(_shiftBox, +Step, true);
 
             _statusLabel = new Label
             {
                 Text = "Ready.",
                 Left = 8,
-                Top = 186,
+                Top = 212,
                 Width = 170,
                 Height = 34,
                 AutoEllipsis = true,
@@ -177,12 +188,14 @@ namespace RevitSetTags.UI
             tips.SetToolTip(_getTagsButton, "1. Select the tags with Revit's selection first (window selection), then click here: no Finish needed. With nothing selected, a pick mode with Finish starts.");
             tips.SetToolTip(_filterBox, "2. Optional: keep only one tag category / family of the selection.");
             tips.SetToolTip(_pickDirectionButton, "3. Click the column origin; the column goes straight down. Right-click or Ctrl+click here to also pick a direction point. The tags are placed and the filter resets.");
+            tips.SetToolTip(_autoLanesButton, "Lay the selected tags (or, with nothing selected, every tag of the view) out in columns and rows around their elements, each with a leader. Spacing x is the minimum pitch.");
             tips.SetToolTip(_spacingBox, "Distance between tag rows, in meters (0.6 m matches the original tool: 2 ft). Applies live to the tags selected in the view, else to the last placed group.");
             tips.SetToolTip(_shiftBox, "Leader shoulder length from the text edge to the elbow, in meters (0.30 m matches the original tool: 1 ft). Applies live to the tags selected in the view, else to the last placed group.");
 
             Controls.Add(_getTagsButton);
             Controls.Add(_filterBox);
             Controls.Add(_pickDirectionButton);
+            Controls.Add(_autoLanesButton);
             Controls.Add(_countLabel);
             Controls.Add(spacingLabel);
             Controls.Add(_spacingBox);
@@ -324,6 +337,22 @@ namespace RevitSetTags.UI
                 ? "Click the column origin, then a direction point (Esc = straight down)."
                 : "Click the column origin (column goes straight down).";
             _handler.Mode = HandlerMode.PlaceColumn;
+            _event.Raise();
+        }
+
+        private void OnAutoLanesClicked(object sender, EventArgs e)
+        {
+            _liveTimer.Stop();
+            if (!TryReadValues(out double spacing, out double shift))
+            {
+                return;
+            }
+
+            _handler.SpacingMeters = spacing;
+            _handler.ShiftMeters = shift;
+            _handler.Filter = _filterBox.SelectedItem as TagTypeFilter;
+            _statusLabel.Text = "Laying tags out in perimeter lanes...";
+            _handler.Mode = HandlerMode.AutoLanes;
             _event.Raise();
         }
 
