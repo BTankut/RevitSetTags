@@ -30,17 +30,18 @@ namespace RevitSetTags.Services
     /// the same level shoulders, kept leader ends and crossing-free order as a
     /// manually picked column.
     ///
-    /// Elements are assigned to the side of their bearing from the centroid
-    /// (right / top / left / bottom), so the leaders of different sides fan
-    /// outwards and do not cross. With the lane-per-family option the families
-    /// follow each other along the same line of every side, separated by a gap,
-    /// so each run of text shows one kind of tag and no leader has to cross
-    /// another family's texts.
+    /// Distribution: perimeter rings (left/right columns, top/bottom rows) are
+    /// opened until their capacity covers every tag, and every element (by the
+    /// centre of the tagged element, so the result does not depend on earlier
+    /// layouts) goes to the nearest lane that still has room, closest first. With the
+    /// lane-per-family option the elements are grouped by the side of their
+    /// bearing from the centroid and the families of a side follow each other
+    /// along the same line, one run per family.
     /// </summary>
     public static class LaneLayoutService
     {
-        private static readonly string[] Sides = { "Right", "Top", "Left", "Bottom" };
-        private const int MaxRingsPerSide = 8;
+        private static readonly string[] Sides = { "Left", "Right", "Top", "Bottom" };
+        private const int MaxRings = 6;
 
         private sealed class Lane
         {
@@ -100,7 +101,7 @@ namespace RevitSetTags.Services
                     continue;
                 }
 
-                XYZ anchor = TagOrderingService.GetAnchor(tag);
+                XYZ anchor = TagOrderingService.GetElementAnchor(tag);
                 if (anchor == null)
                 {
                     continue;
@@ -143,15 +144,18 @@ namespace RevitSetTags.Services
                 }
             }
 
+            double gap = 0.6 * frame.TextHeight;          // between lines of a column
+            double rowGap = 1.0 * frame.TextHeight;       // between texts side by side in a row
+            double colPitch = Math.Max(spacingMin, frame.MaxHeight + gap);
+            double rowPitch = Math.Max(spacingMin, frame.MaxWidth + rowGap);
             frame.Clearance = frame.Shift + 2 * frame.TextHeight;    // between the elements' extents and the first lane line
             frame.MinS = items.Min(i => i.S);
             frame.MaxS = items.Max(i => i.S);
             frame.MinA = items.Min(i => i.A);
             frame.MaxA = items.Max(i => i.A);
             frame.Depth = items.Average(i => i.Anchor.DotProduct(frame.ViewDir));
-            double gap = 0.6 * frame.TextHeight;
 
-            // Side by bearing from the centroid: leaders of different sides fan outwards.
+            // Side by bearing from the centroid (used by the lane-per-family option).
             double cS = items.Average(i => i.S), cA = items.Average(i => i.A);
             foreach (Item item in items)
             {
@@ -160,86 +164,92 @@ namespace RevitSetTags.Services
             }
 
             var lanes = new List<Lane>();
-            foreach (string side in Sides)
+            if (!lanePerFamily)
             {
-                List<Item> sideItems = items.Where(i => i.Side == side).ToList();
-                if (sideItems.Count == 0)
+                // Perimeter rings until the capacity covers every tag (staggered rows/columns on outer rings).
+                int ring = 0;
+                while (lanes.Sum(l => l.Capacity) < items.Count && ring < MaxRings)
                 {
-                    continue;
+                    foreach (string side in Sides)
+                    {
+                        lanes.Add(MakeSideLane(frame, side, ring, colPitch, rowPitch));
+                    }
+
+                    ring++;
                 }
 
-                double colPitch = Math.Max(spacingMin, frame.MaxHeight + gap);
-                double rowPitch = Math.Max(spacingMin, frame.MaxWidth + gap);
-                bool isColumn = side == "Left" || side == "Right";
-
-                if (!lanePerFamily)
+                // Nearest lane with capacity, closest elements first (the original Auto lanes distribution).
+                foreach (Item item in items.OrderBy(i => lanes.Min(l => DistanceToLane(l, i.Anchor))))
                 {
-                    // Rings on this side until the capacity covers its elements; inner ring first.
-                    var sideLanes = new List<Lane>();
-                    int ring = 0;
-                    while (sideLanes.Sum(l => l.Capacity) < sideItems.Count && ring < MaxRingsPerSide)
+                    Lane target = lanes.OrderBy(l => DistanceToLane(l, item.Anchor)).FirstOrDefault(l => l.Tags.Count < l.Capacity);
+                    if (target == null)
                     {
-                        sideLanes.Add(MakeSideLane(frame, side, ring++, colPitch, rowPitch));
+                        target = lanes.OrderBy(l => DistanceToLane(l, item.Anchor)).First();
                     }
 
-                    foreach (Item item in sideItems.OrderBy(i => sideLanes.Min(l => DistanceToLane(l, i.Anchor))))
-                    {
-                        Lane target = sideLanes.OrderBy(l => l.Ring).FirstOrDefault(l => l.Tags.Count < l.Capacity) ?? sideLanes.Last();
-                        target.Tags.Add(item.Tag);
-                    }
-
-                    lanes.AddRange(sideLanes);
-                    continue;
+                    target.Tags.Add(item.Tag);
                 }
-
-                // Lane per family: the families follow each other along the same line, one
-                // pitch of gap between them, ordered like their elements along the side so the
-                // segments do not cross each other. A new ring is opened only when the line overflows.
-                var families = sideItems.GroupBy(i => i.Family)
-                    .Select(g => new { Family = g.Key, Items = g.ToList(), Along = isColumn ? -g.Average(i => i.A) : g.Average(i => i.S) })
-                    .OrderBy(g => g.Along)
-                    .ToList();
-
-                int segRing = 0;
-                Lane line = MakeSideLane(frame, side, segRing, colPitch, rowPitch);
-                double cursor = 0;
-                double previousPitch = 0;
-                foreach (var family in families)
+            }
+            else
+            {
+                // Lane per family: on every side the families follow each other along the same line,
+                // one pitch of gap between them, ordered like their elements along the side. A new
+                // ring is opened only when the line overflows.
+                foreach (string side in Sides)
                 {
-                    double fw = familyWidth.TryGetValue(family.Family, out double w0) ? w0 : frame.MaxWidth;
-                    double fh = familyHeight.TryGetValue(family.Family, out double h0) ? h0 : frame.MaxHeight;
-                    double pitch = isColumn ? Math.Max(spacingMin, fh + gap) : Math.Max(spacingMin, fw + gap);
-                    double segmentLength = (family.Items.Count - 1) * pitch;
-
-                    if (cursor > 0)
+                    List<Item> sideItems = items.Where(i => i.Side == side).ToList();
+                    if (sideItems.Count == 0)
                     {
-                        cursor += Math.Max(previousPitch, pitch); // visible break between families
+                        continue;
                     }
 
-                    if (cursor + segmentLength > line.Length * 1.5 && cursor > 0 && segRing < MaxRingsPerSide - 1)
+                    bool isColumn = side == "Left" || side == "Right";
+                    var families = sideItems.GroupBy(i => i.Family)
+                        .Select(g => new { Family = g.Key, Items = g.ToList(), Along = isColumn ? -g.Average(i => i.A) : g.Average(i => i.S) })
+                        .OrderBy(g => g.Along)
+                        .ToList();
+
+                    int segRing = 0;
+                    Lane line = MakeSideLane(frame, side, segRing, colPitch, rowPitch);
+                    double cursor = 0;
+                    double previousPitch = 0;
+                    foreach (var family in families)
                     {
-                        line = MakeSideLane(frame, side, ++segRing, colPitch, rowPitch);
-                        cursor = 0;
+                        double fw = familyWidth.TryGetValue(family.Family, out double w0) ? w0 : frame.MaxWidth;
+                        double fh = familyHeight.TryGetValue(family.Family, out double h0) ? h0 : frame.MaxHeight;
+                        double pitch = isColumn ? Math.Max(spacingMin, fh + gap) : Math.Max(spacingMin, fw + rowGap);
+                        double segmentLength = (family.Items.Count - 1) * pitch;
+
+                        if (cursor > 0)
+                        {
+                            cursor += Math.Max(previousPitch, pitch); // visible break between families
+                        }
+
+                        if (cursor + segmentLength > line.Length * 1.5 && cursor > 0 && segRing < MaxRings - 1)
+                        {
+                            line = MakeSideLane(frame, side, ++segRing, colPitch, rowPitch);
+                            cursor = 0;
+                        }
+
+                        var segment = new Lane
+                        {
+                            Name = line.Name + " [" + family.Family + "]",
+                            Side = side,
+                            Ring = segRing,
+                            Family = family.Family,
+                            Start = line.Start + line.Dir * cursor,
+                            Dir = line.Dir,
+                            ColumnDir = line.ColumnDir,
+                            Length = Math.Max(0, line.Length - cursor),
+                            Pitch = pitch,
+                            Capacity = family.Items.Count,
+                        };
+                        segment.Tags.AddRange(family.Items.Select(i => i.Tag));
+                        lanes.Add(segment);
+
+                        cursor += segmentLength;
+                        previousPitch = pitch;
                     }
-
-                    var segment = new Lane
-                    {
-                        Name = line.Name + " [" + family.Family + "]",
-                        Side = side,
-                        Ring = segRing,
-                        Family = family.Family,
-                        Start = line.Start + line.Dir * cursor,
-                        Dir = line.Dir,
-                        ColumnDir = line.ColumnDir,
-                        Length = Math.Max(0, line.Length - cursor),
-                        Pitch = pitch,
-                        Capacity = family.Items.Count,
-                    };
-                    segment.Tags.AddRange(family.Items.Select(i => i.Tag));
-                    lanes.Add(segment);
-
-                    cursor += segmentLength;
-                    previousPitch = pitch;
                 }
             }
 
@@ -255,7 +265,11 @@ namespace RevitSetTags.Services
                     Pitch = lane.Pitch,
                     Capacity = lane.Capacity,
                 };
-                result.Result = TagOrderingService.PlaceColumn(doc, view, lane.Tags, lane.Start, lane.ColumnDir, lane.Pitch, frame.Shift);
+                // Place with the user's spacing as the minimum: PlaceColumn raises it to what the
+                // lane's own texts need, exactly like a later live adjustment does, so typing the
+                // same value back changes nothing.
+                result.Result = TagOrderingService.PlaceColumn(doc, view, lane.Tags, lane.Start, lane.ColumnDir, spacingMin, frame.Shift);
+                result.Pitch = result.Result.PitchUsed;
                 results.Add(result);
             }
 
@@ -268,10 +282,10 @@ namespace RevitSetTags.Services
             double colOffset = f.Clearance + ring * (f.MaxWidth + 2 * f.TextHeight + f.Shift);
             double rowOffset = f.Clearance + ring * (f.MaxHeight + 2 * f.TextHeight + f.Shift);
             double stagger = ring % 2 == 1 ? 0.5 : 0.0;
-            double colSpan = (f.MaxA - f.MinA) + 2 * f.TextHeight;
-            double rowSpan = (f.MaxS - f.MinS) + 2 * f.TextHeight;
-            double colTop = f.MaxA + f.TextHeight - stagger * colPitch;
-            double rowLeft = f.MinS - f.TextHeight + stagger * rowPitch;
+            double colSpan = (f.MaxA - f.MinA) + 2 * (rowOffset - f.Clearance) + 2 * f.TextHeight;
+            double rowSpan = (f.MaxS - f.MinS) + 2 * (colOffset - f.Clearance) + 2 * f.TextHeight;
+            double colTop = f.MaxA + (rowOffset - f.Clearance) + f.TextHeight - stagger * colPitch;
+            double rowLeft = f.MinS - (colOffset - f.Clearance) - f.TextHeight + stagger * rowPitch;
             string suffix = ring == 0 ? "" : " " + (ring + 1);
 
             switch (side)

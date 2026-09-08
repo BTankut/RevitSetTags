@@ -231,11 +231,13 @@ namespace RevitSetTags.Services
             }
 
             // The requested spacing is a minimum: rows of wide texts and columns of tall
-            // texts get the pitch their text needs, plus a small gap.
+            // texts get the pitch their text needs, plus a gap (one text height between
+            // texts side by side, 0.6 text height between lines).
             double textHeight = 0.0082 * (view.Scale > 0 ? view.Scale : 100);
             if (maxExtent > 0)
             {
-                spacing = Math.Max(spacing, maxExtent + 0.4 * textHeight);
+                bool sideBySide = Math.Abs(axis.DotProduct(right)) > Math.Abs(axis.DotProduct(up));
+                spacing = Math.Max(spacing, maxExtent + (sideBySide ? 1.0 : 0.6) * textHeight);
             }
 
             result.PitchUsed = spacing;
@@ -277,6 +279,15 @@ namespace RevitSetTags.Services
         private static string FamilyKey(Document doc, Family family)
         {
             return (doc.PathName ?? doc.Title) + "|" + family.Id.Value;
+        }
+
+        /// <summary>
+        /// Centre of the tagged element (curve midpoint, location point or bounding box
+        /// centre), else the tag head. Stable across layouts, unlike the leader end.
+        /// </summary>
+        public static XYZ GetElementAnchor(IndependentTag tag)
+        {
+            return TryGetElementAnchor(tag) ?? GetHeadPosition(tag);
         }
 
         /// <summary>
