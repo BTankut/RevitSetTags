@@ -153,7 +153,8 @@ namespace RevitSetTags.Services
         }
 
         /// <param name="columnDir">Optional column direction (any vector; projected into the view plane). Null = down the view.</param>
-        public static ColumnResult PlaceColumn(Document doc, View view, IList<IndependentTag> tags, XYZ origin, XYZ columnDir, double spacing, double shift)
+        /// <param name="orderAlongAxis">True: first order the rows by the anchors' position along the column axis (rows hugging a facade), false: angular fan from the column centre (a column looking at a cluster). Crossings are removed either way.</param>
+        public static ColumnResult PlaceColumn(Document doc, View view, IList<IndependentTag> tags, XYZ origin, XYZ columnDir, double spacing, double shift, bool orderAlongAxis = false)
         {
             shift = Math.Abs(shift);
             XYZ up = GetViewUp(view);
@@ -243,7 +244,7 @@ namespace RevitSetTags.Services
             result.PitchUsed = spacing;
 
             // 4. Order the rows: angular fan from the column centre, then remove crossings.
-            List<TagItem> ordered = OrderRows(items, axis, shoulderAxis, s0, a0, spacing, elbowS, sign);
+            List<TagItem> ordered = OrderRows(items, axis, shoulderAxis, s0, a0, spacing, elbowS, sign, orderAlongAxis);
 
             // 5. Place heads (text centre on the row, text edge on the column line), restore leaders,
             //    set ends and elbows. The leader leaves the text at the edge midpoint, so an elbow on
@@ -336,6 +337,34 @@ namespace RevitSetTags.Services
 
             width = (rightEdge - left) * scale;
             height = (top - bottom) * scale;
+            return true;
+        }
+
+        /// <summary>
+        /// Text block of the tag in the view plane, as intervals along the view's right
+        /// and up axes (model units, absolute). False when the family geometry is unknown.
+        /// </summary>
+        public static bool TryGetTextBlock(Document doc, View view, IndependentTag tag, out double s0, out double s1, out double a0, out double a1)
+        {
+            s0 = s1 = a0 = a1 = 0;
+            if (!ComputeBlock(doc, view, tag, out double left, out double rightEdge, out double bottom, out double top, out double scale))
+            {
+                return false;
+            }
+
+            XYZ up = GetViewUp(view);
+            XYZ right = GetViewRight(view, up);
+            XYZ head = GetHeadPosition(tag);
+            if (head == null)
+            {
+                return false;
+            }
+
+            double hs = head.DotProduct(right), ha = head.DotProduct(up);
+            s0 = hs + left * scale;
+            s1 = hs + rightEdge * scale;
+            a0 = ha + bottom * scale;
+            a1 = ha + top * scale;
             return true;
         }
 
@@ -658,20 +687,24 @@ namespace RevitSetTags.Services
 
         // ----- ordering ----------------------------------------------------------------
 
-        private static List<TagItem> OrderRows(List<TagItem> items, XYZ axis, XYZ shoulderAxis, double s0, double a0, double spacing, double elbowS, int sign)
+        private static List<TagItem> OrderRows(List<TagItem> items, XYZ axis, XYZ shoulderAxis, double s0, double a0, double spacing, double elbowS, int sign, bool orderAlongAxis)
         {
             double centreA = a0 + spacing * (items.Count - 1) * 0.5;
 
-            // Angular fan: the anchor pointing most towards the start of the column gets the first row.
-            List<TagItem> ordered = items
-                .OrderByDescending(item =>
-                {
-                    double u = sign * (item.Anchor.DotProduct(shoulderAxis) - s0);
-                    double v = -(item.Anchor.DotProduct(axis) - centreA);
-                    return Math.Atan2(v, u);
-                })
-                .ThenBy(item => item.Tag.Id.Value)
-                .ToList();
+            // Initial order: along the axis (each tag next to its element) for rows hugging the
+            // elements, else an angular fan (the anchor pointing most towards the start of the
+            // column gets the first row) for a column looking at a cluster.
+            List<TagItem> ordered = orderAlongAxis
+                ? items.OrderBy(item => item.Anchor.DotProduct(axis)).ThenBy(item => item.Tag.Id.Value).ToList()
+                : items
+                    .OrderByDescending(item =>
+                    {
+                        double u = sign * (item.Anchor.DotProduct(shoulderAxis) - s0);
+                        double v = -(item.Anchor.DotProduct(axis) - centreA);
+                        return Math.Atan2(v, u);
+                    })
+                    .ThenBy(item => item.Tag.Id.Value)
+                    .ToList();
 
             // Uncross: swapping the targets of two crossing leaders always shortens the total length,
             // so this terminates with no crossings left.
