@@ -326,10 +326,25 @@ namespace RevitSetTags.Handlers
             Bridge?.ReportPlaced();
             int placed = lanes.Sum(l => l.Result.Placed);
             int skipped = lanes.Sum(l => l.Result.Skipped);
-            string detail = string.Join(", ", lanes.Select(l => l.Name + " " + l.Tags.Count));
-            if (LanePerFamily)
+            string detail;
+            if (lanes.Count > 8)
+            {
+                // Many runs (outline lanes): one figure per side instead of the full list.
+                detail = string.Join(", ", lanes
+                    .GroupBy(l => l.Name.Split(new[] { " @" }, StringSplitOptions.None)[0].TrimEnd('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ' '))
+                    .Select(g => g.Key + " " + g.Sum(l => l.Tags.Count) + " in " + g.Count() + (g.Count() == 1 ? " run" : " runs")));
+                if (LanePerFamily)
+                {
+                    detail += "; " + string.Join(", ", lanes.GroupBy(l => l.Family ?? "?").Select(g => g.Key + " " + g.Sum(l => l.Tags.Count)));
+                }
+            }
+            else if (LanePerFamily)
             {
                 detail = string.Join(", ", lanes.Select(l => (l.Family ?? "?") + " -> " + l.Name.Replace(" [" + (l.Family ?? "?") + "]", "") + " (" + l.Tags.Count + ")"));
+            }
+            else
+            {
+                detail = string.Join(", ", lanes.Select(l => l.Name + " " + l.Tags.Count));
             }
             return $"Tags count: {tags.Count}. Auto lanes ({source}): {lanes.Count} lanes, {placed} placed, {skipped} skipped. {detail}";
         }
